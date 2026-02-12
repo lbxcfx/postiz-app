@@ -8,6 +8,7 @@ import {
 } from '@gitroom/nestjs-libraries/materials/materials.crawler.service';
 import { MaterialsService } from '@gitroom/nestjs-libraries/materials/materials.service';
 import {
+  MaterialsEventPayload,
   MaterialsEventsService,
 } from '@gitroom/nestjs-libraries/materials/materials.events.service';
 import * as fs from 'fs';
@@ -337,32 +338,56 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     }
 
     let consumedPaths = job.data.consumedPaths ?? [];
-    let resolved = await this.materials.resolveOutputForJob({
-      jobId: this.getJobId(job),
-      platform: job.data.platform,
-      startedAt,
-      consumedPaths,
-    });
+    const resolveTimeoutMs = this.parseNumber(
+      process.env.MATERIALS_RESULT_RESOLVE_TIMEOUT_MS,
+      120000
+    );
+    const resolvePollMs = this.parseNumber(
+      process.env.MATERIALS_RESULT_RESOLVE_POLL_INTERVAL_MS,
+      3000
+    );
+    const resolveStartedAt = Date.now();
+    let resolved:
+      | {
+          file: { path: string };
+          data: unknown;
+        }
+      | null = null;
+    let sawNonContent = false;
 
-    if (!resolved) {
-      throw new Error('No output file found for job');
-    }
-
-    if (this.isNonContentPayload(resolved.data, job.data.platform)) {
-      consumedPaths = [...consumedPaths, resolved.file.path];
-      await job.updateData({ ...job.data, consumedPaths });
+    while (Date.now() - resolveStartedAt < resolveTimeoutMs) {
       resolved = await this.materials.resolveOutputForJob({
         jobId: this.getJobId(job),
         platform: job.data.platform,
         startedAt,
         consumedPaths,
       });
+
       if (!resolved) {
-        throw new Error('No content output file found for job');
+        await new Promise((resolve) => setTimeout(resolve, resolvePollMs));
+        continue;
       }
-      if (this.isNonContentPayload(resolved.data, job.data.platform)) {
-        throw new Error('Non-content output file found for job');
+
+      if (!this.isNonContentPayload(resolved.data, job.data.platform)) {
+        break;
       }
+
+      sawNonContent = true;
+      consumedPaths = [...consumedPaths, resolved.file.path];
+      await job.updateData({ ...job.data, consumedPaths });
+      resolved = null;
+      await new Promise((resolve) => setTimeout(resolve, resolvePollMs));
+    }
+
+    if (!resolved) {
+      if (sawNonContent) {
+        throw new Error(
+          `No content output file found for job after ${Math.round(resolveTimeoutMs / 1000)}s`
+        );
+      }
+      throw new Error(
+        `No output file found for job after ${Math.round(resolveTimeoutMs / 1000)}s`
+      );
     }
 
     await this.downloadAssets(resolved.file.path, this.getJobId(job));
@@ -475,7 +500,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       return 'queued';
     }
     if (state === 'active') {
-      return progress >= 1 ? 'succeeded' : 'running';
+      return 'running';
     }
     if (state === 'completed') {
       return 'succeeded';
