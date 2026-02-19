@@ -57,6 +57,14 @@ def get_current_date() -> str:
     return time.strftime('%Y-%m-%d', time.localtime())
 
 
+def get_current_date_with_time() -> str:
+    """
+    Get current date with time for file naming: '2023-12-02-13-01-23'
+    :return:
+    """
+    return time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
+
+
 def get_time_str_from_unix_time(unixtime):
     """
     Unix integer timestamp ==> datetime string

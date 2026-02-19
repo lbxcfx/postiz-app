@@ -30,28 +30,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from .routers import crawler_router, data_router, websocket_router
+from .routers import crawler_router, data_router, websocket_router, v1_jobs_router, health_router, config_router, user_profile_router
+from .middleware import GatewayAuthMiddleware
 
 app = FastAPI(
-    title="MediaCrawler WebUI API",
-    description="API for controlling MediaCrawler from WebUI",
+    title="MediaCrawler API",
+    description="MediaCrawler Crawler Service API - WebUI and v1 Job APIs",
     version="1.0.0"
 )
+
+# Add Gateway authentication middleware (can be disabled in dev via env var)
+if os.getenv("ENABLE_GW_AUTH", "false").lower() == "true":
+    app.add_middleware(GatewayAuthMiddleware)
 
 # Get webui static files directory
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
 
-# CORS configuration - allow frontend dev server access and local file testing
+# CORS configuration - allow frontend dev server access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",  # Vite dev server
         "http://localhost:3000",  # Backup port
-        "http://localhost:8080",  # Same origin
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
-        "http://127.0.0.1:8080",  # Same origin
-        "null",  # Allow file:// protocol (browsers send Origin: null)
+        "http://127.0.0.1:8080",
+        "null",  # Allow file:// protocol
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -59,9 +63,17 @@ app.add_middleware(
 )
 
 # Register routers
+# V1 API (according to API.md specification)
+app.include_router(v1_jobs_router)
+app.include_router(health_router)
+
+# Legacy WebUI API
 app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
+app.include_router(config_router, prefix="/api")
+app.include_router(user_profile_router, prefix="/api")
+
 
 
 @app.get("/")
@@ -196,4 +208,8 @@ if os.path.exists(WEBUI_DIR):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8081)
+    # Default to localhost for development, use 0.0.0.0 for production
+    host = os.getenv("API_HOST", "0.0.0.0")
+    port = int(os.getenv("API_PORT", "8081"))
+    uvicorn.run(app, host=host, port=port)
+

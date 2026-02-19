@@ -6,6 +6,9 @@ echo "Starting Postiz Services..."
 echo "Starting Docker containers..."
 docker-compose -f docker-compose.dev.yaml up -d
 
+echo "Syncing Prisma schema..."
+pnpm run prisma-db-push
+
 
 # Start Postiz Backend in background
 echo "Starting Backend..."

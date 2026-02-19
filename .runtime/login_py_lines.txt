@@ -1,0 +1,1167 @@
+
+---------- MEDIACRAWLER\MEDIA_PLATFORM\XHS\LOGIN.PY
+[1]# -*- coding: utf-8 -*-
+[2]# Copyright (c) 2025 relakkes@gmail.com
+[3]#
+[4]# This file is part of MediaCrawler project.
+[5]# Repository: https://github.com/NanmiCoder/MediaCrawler/blob/main/media_platform/xhs/login.py
+[6]# GitHub: https://github.com/NanmiCoder
+[7]# Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
+[8]#
+[9]
+[10]# 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
+[11]# 1. 不得用于任何商业用途。
+[12]# 2. 使用时应遵守目标平台的使用条款和robots.txt规则。
+[13]# 3. 不得进行大规模爬取或对平台造成运营干扰。
+[14]# 4. 应合理控制请求频率，避免给目标平台带来不必要的负担。
+[15]# 5. 不得用于任何非法或不当的用途。
+[16]#
+[17]# 详细许可条款请参阅项目根目录下的LICENSE文件。
+[18]# 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
+[19]
+[20]
+[21]import asyncio
+[22]import functools
+[23]import re
+[24]import sys
+[25]from datetime import datetime
+[26]from pathlib import Path
+[27]from typing import Optional
+[28]
+[29]from playwright.async_api import BrowserContext, Page
+[30]from tenacity import (RetryError, retry, retry_if_result, stop_after_attempt,
+[31]                      wait_fixed)
+[32]
+[33]import config
+[34]from base.base_crawler import AbstractLogin
+[35]from cache.cache_factory import CacheFactory
+[36]from tools import utils
+[37]
+[38]
+[39]class XiaoHongShuLogin(AbstractLogin):
+[40]
+[41]    def __init__(self,
+[42]                 login_type: str,
+[43]                 browser_context: BrowserContext,
+[44]                 context_page: Page,
+[45]                 login_phone: Optional[str] = "",
+[46]                 cookie_str: str = ""
+[47]                 ):
+[48]        config.LOGIN_TYPE = login_type
+[49]        self.browser_context = browser_context
+[50]        self.context_page = context_page
+[51]        self.login_phone = login_phone
+[52]        self.cookie_str = cookie_str
+[53]
+[54]    def _normalize_phone(self) -> str:
+[55]        raw = (self.login_phone or "").strip()
+[56]        digits = "".join(ch for ch in raw if ch.isdigit())
+[57]        if not digits:
+[58]            return raw
+[59]        if len(digits) == 13 and digits.startswith("86"):
+[60]            return digits[2:]
+[61]        if len(digits) > 11:
+[62]            return digits[-11:]
+[63]        return digits
+[64]
+[65]    def _sms_code_file_path(self) -> Optional[Path]:
+[66]        normalized_phone = self._normalize_phone()
+[67]        if not normalized_phone:
+[68]            return None
+[69]        sms_dir = Path(getattr(config, "SMS_CODE_DIR", "./runtime/sms_codes"))
+[70]        sms_dir.mkdir(parents=True, exist_ok=True)
+[71]        return sms_dir / f"xhs_{normalized_phone}.txt"
+[72]
+[73]    def _read_sms_code_from_file(self) -> Optional[str]:
+[74]        file_path = self._sms_code_file_path()
+[75]        if not file_path or not file_path.exists():
+[76]            return None
+[77]        try:
+[78]            code = file_path.read_text(encoding="utf-8").strip()
+[79]            if not code:
+[80]                return None
+[81]            normalized_code = "".join(ch for ch in code if ch.isdigit()) or code
+[82]            try:
+[83]                file_path.unlink()
+[84]            except Exception:
+[85]                pass
+[86]            return normalized_code
+[87]        except Exception as e:
+[88]            utils.logger.debug(f"[XiaoHongShuLogin] Failed to read sms code file: {e}")
+[89]            return None
+[90]
+[91]    async def _dump_page_screenshot(self, tag: str) -> None:
+[92]        """Capture current page screenshot for selector/debug failures."""
+[93]        try:
+[94]            screenshot_bytes = await self.context_page.screenshot(type="png")
+[95]            debug_dir = Path("./runtime/login_debug")
+[96]            debug_dir.mkdir(parents=True, exist_ok=True)
+[97]            filename = f"{tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+[98]            screenshot_path = debug_dir / filename
+[99]            screenshot_path.write_bytes(screenshot_bytes)
+[100]            html_path = debug_dir / filename.replace(".png", ".html")
+[101]            html_path.write_text(await self.context_page.content(), encoding="utf-8")
+[102]            utils.logger.info(
+[103]                f"[XiaoHongShuLogin.{tag}] browser screenshot saved: {screenshot_path.resolve()}, html saved: {html_path.resolve()}"
+[104]            )
+[105]        except Exception as e:
+[106]            utils.logger.debug(f"[XiaoHongShuLogin.{tag}] Failed to take screenshot: {e}")
+[107]
+[108]    async def _detect_access_restriction(self) -> Optional[str]:
+[109]        try:
+[110]            content = await self.context_page.content()
+[111]        except Exception:
+[112]            return None
+[113]
+[114]        markers = [
+[115]            "IP存在风险",
+[116]            "安全限制",
+[117]            "300012",
+[118]            "请切换可靠网络环境后重试",
+[119]        ]
+[120]        for marker in markers:
+[121]            if marker in content:
+[122]                return marker
+[123]        return None
+[124]
+[125]    async def _wait_login_container(self):
+[126]        selectors = [
+[127]            "div.login-container",
+[128]            "div[class*='login-container']",
+[129]            "xpath=//div[contains(@class,'login-container')]",
+[130]            "xpath=//div[contains(@class,'login') and .//input[contains(@placeholder,'手机号')]]",
+[131]        ]
+[132]        for _ in range(4):
+[133]            for selector in selectors:
+[134]                try:
+[135]                    ele = await self.context_page.wait_for_selector(
+[136]                        selector=selector,
+[137]                        timeout=2000
+[138]                    )
+[139]                    if ele:
+[140]                        utils.logger.info(
+[141]                            f"[XiaoHongShuLogin._wait_login_container] Found login container by selector: {selector}"
+[142]                        )
+[143]                        return ele
+[144]                except Exception:
+[145]                    continue
+[146]            await asyncio.sleep(0.5)
+[147]        return None
+[148]
+[149]    async def _try_click(self, selectors: list[str], step: str) -> bool:
+[150]        for selector in selectors:
+[151]            try:
+[152]                locator = self.context_page.locator(selector)
+[153]                count = await locator.count()
+[154]                if count <= 0:
+[155]                    continue
+[156]                for idx in range(min(count, 8)):
+[157]                    try:
+[158]                        candidate = locator.nth(idx)
+[159]                        if not await candidate.is_visible():
+[160]                            continue
+[161]                        await candidate.click(timeout=2500, force=True)
+[162]                        utils.logger.info(
+[163]                            f"[XiaoHongShuLogin.{step}] Clicked selector: {selector} (index={idx})"
+[164]                        )
+[165]                        return True
+[166]                    except Exception:
+[167]                        continue
+[168]                await locator.first.click(timeout=2500, force=True)
+[169]                utils.logger.info(
+[170]                    f"[XiaoHongShuLogin.{step}] Clicked selector: {selector} (fallback-first)"
+[171]                )
+[172]                return True
+[173]            except Exception:
+[174]                continue
+[175]        return False
+[176]
+[177]    async def _try_click_login_by_text(self) -> bool:
+[178]        try:
+[179]            clicked = await self.context_page.evaluate(
+[180]                """() => {
+[181]                    const elements = Array.from(
+[182]                        document.querySelectorAll("button, a, div, span")
+[183]                    );
+[184]                    const isVisible = (el) => {
+[185]                        const rect = el.getBoundingClientRect();
+[186]                        const style = window.getComputedStyle(el);
+[187]                        return (
+[188]                            rect.width > 0 &&
+[189]                            rect.height > 0 &&
+[190]                            style.visibility !== "hidden" &&
+[191]                            style.display !== "none"
+[192]                        );
+[193]                    };
+[194]
+[195]                    const target = elements.find((el) => {
+[196]                        const text = (el.innerText || "").trim();
+[197]                        if (!text || text !== "登录") return false;
+[198]                        if (!isVisible(el)) return false;
+[199]                        return true;
+[200]                    });
+[201]                    if (!target) return false;
+[202]                    target.click();
+[203]                    return true;
+[204]                }"""
+[205]            )
+[206]            if clicked:
+[207]                utils.logger.info("[XiaoHongShuLogin._try_click_login_by_text] Clicked visible 登录 element")
+[208]                return True
+[209]        except Exception as e:
+[210]            utils.logger.debug(f"[XiaoHongShuLogin._try_click_login_by_text] Failed: {e}")
+[211]        return False
+[212]
+[213]    async def _has_visible_text(self, target_text: str) -> bool:
+[214]        try:
+[215]            visible = await self.context_page.evaluate(
+[216]                """(targetText) => {
+[218]                    const wanted = normalize(targetText);
+[219]                    if (!wanted) return false;
+[220]                    const elements = Array.from(document.querySelectorAll("button, a, div, span"));
+[221]                    const isVisible = (el) => {
+[222]                        const rect = el.getBoundingClientRect();
+[223]                        const style = window.getComputedStyle(el);
+[224]                        return (
+[225]                            rect.width > 0 &&
+[226]                            rect.height > 0 &&
+[227]                            style.visibility !== "hidden" &&
+[228]                            style.display !== "none"
+[229]                        );
+[230]                    };
+[231]                    for (const el of elements) {
+[232]                        if (!isVisible(el)) continue;
+[233]                        const text = normalize(el.innerText || el.textContent || "");
+[234]                        if (!text) continue;
+[235]                        if (text === wanted || text.includes(wanted)) return true;
+[236]                    }
+[237]                    return false;
+[238]                }""",
+[239]                target_text,
+[240]            )
+[241]            return bool(visible)
+[242]        except Exception as e:
+[243]            utils.logger.debug(f"[XiaoHongShuLogin._has_visible_text] Failed for text={target_text}: {e}")
+[244]        return False
+[245]
+[246]    async def _click_visible_text(self, target_text: str) -> bool:
+[247]        try:
+[248]            clicked = await self.context_page.evaluate(
+[249]                """(targetText) => {
+[251]                    const wanted = normalize(targetText);
+[252]                    if (!wanted) return false;
+[253]                    const elements = Array.from(document.querySelectorAll("button, a, div, span, label"));
+[254]                    const isVisible = (el) => {
+[255]                        const rect = el.getBoundingClientRect();
+[256]                        const style = window.getComputedStyle(el);
+[257]                        return (
+[258]                            rect.width > 0 &&
+[259]                            rect.height > 0 &&
+[260]                            style.visibility !== "hidden" &&
+[261]                            style.display !== "none"
+[262]                        );
+[263]                    };
+[264]                    const matches = [];
+[265]                    for (const el of elements) {
+[266]                        if (!isVisible(el)) continue;
+[267]                        const text = normalize(el.innerText || el.textContent || "");
+[268]                        if (!text || text !== wanted) continue;
+[269]                        const rect = el.getBoundingClientRect();
+[270]                        const area = rect.width * rect.height;
+[271]                        matches.push({ el, rect, area });
+[272]                    }
+[273]                    matches.sort((a, b) => a.area - b.area);
+[274]                    for (const candidate of matches) {
+[275]                        const { el, rect } = candidate;
+[276]                        const cx = rect.left + rect.width / 2;
+[277]                        const cy = rect.top + rect.height / 2;
+[278]                        const top = document.elementFromPoint(cx, cy);
+[279]                        if (!top) continue;
+[280]                        if (!(el === top || el.contains(top) || top.contains(el))) continue;
+[281]                        const clickable = el.closest("button, a, [role='button'], [tabindex]") || el;
+[282]                        try {
+[283]                            clickable.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+[284]                            clickable.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+[285]                            clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+[286]                            clickable.click();
+[287]                        } catch (_) {
+[288]                            continue;
+[289]                        }
+[290]                        return true;
+[291]                    }
+[292]                    return false;
+[293]                }""",
+[294]                target_text,
+[295]            )
+[296]            if clicked:
+[297]                utils.logger.info(f"[XiaoHongShuLogin._click_visible_text] Clicked visible text: {target_text}")
+[298]                return True
+[299]        except Exception as e:
+[300]            utils.logger.debug(f"[XiaoHongShuLogin._click_visible_text] Failed for text={target_text}: {e}")
+[301]        return False
+[302]
+[303]    async def _reset_auth_state_for_phone_login(self) -> None:
+[304]        try:
+[305]            await self.browser_context.clear_cookies()
+[306]        except Exception as e:
+[307]            utils.logger.debug(f"[XiaoHongShuLogin._reset_auth_state_for_phone_login] clear_cookies failed: {e}")
+[308]
+[309]        try:
+[310]            await self.context_page.evaluate(
+[311]                """() => {
+[312]                    try { localStorage.clear(); } catch (_) {}
+[313]                    try { sessionStorage.clear(); } catch (_) {}
+[314]                }"""
+[315]            )
+[316]        except Exception as e:
+[317]            utils.logger.debug(f"[XiaoHongShuLogin._reset_auth_state_for_phone_login] storage clear failed: {e}")
+[318]
+[319]        try:
+[320]            await self.context_page.goto("https://www.xiaohongshu.com/explore")
+[321]            await asyncio.sleep(1)
+[322]            utils.logger.info("[XiaoHongShuLogin._reset_auth_state_for_phone_login] Reset auth state and reloaded page")
+[323]        except Exception as e:
+[324]            utils.logger.debug(f"[XiaoHongShuLogin._reset_auth_state_for_phone_login] reload failed: {e}")
+[325]
+[326]    async def _handle_read_agreement_dialog(self) -> bool:
+[327]        """
+[328]        Handle XHS secondary agreement dialog:
+[329]        '阅读并同意' -> '同意并继续'
+[330]        """
+[331]        try:
+[332]            dialog_visible = await self._has_visible_text("同意并继续")
+[333]            if not dialog_visible:
+[334]                return False
+[335]            for _ in range(3):
+[336]                clicked = await self._click_visible_text("同意并继续")
+[337]                if not clicked:
+[338]                    clicked = await self._try_click(
+[339]                        selectors=[
+[340]                            "button:has-text('同意并继续')",
+[341]                            "xpath=//button[normalize-space(text())='同意并继续']",
+[342]                            "xpath=//*[normalize-space(text())='同意并继续']",
+[343]                        ],
+[344]                        step="agree_continue_dialog",
+[345]                    )
+[346]                if clicked:
+[347]                    await asyncio.sleep(0.35)
+[348]                    still_visible = await self._has_visible_text("同意并继续")
+[349]                    if not still_visible:
+[350]                        utils.logger.info(
+[351]                            "[XiaoHongShuLogin._handle_read_agreement_dialog] Dialog dismissed by 同意并继续"
+[352]                        )
+[353]                        return True
+[354]                await asyncio.sleep(0.15)
+[355]            utils.logger.warning(
+[356]                "[XiaoHongShuLogin._handle_read_agreement_dialog] Agreement dialog still visible after click attempts"
+[357]            )
+[358]        except Exception as e:
+[359]            utils.logger.debug(
+[360]                f"[XiaoHongShuLogin._handle_read_agreement_dialog] Failed: {e}"
+[361]            )
+[362]        return False
+[363]
+[364]    async def _dismiss_known_blockers(self, rounds: int = 2) -> bool:
+[365]        dismissed = False
+[366]        for _ in range(rounds):
+[367]            handled = await self._handle_read_agreement_dialog()
+[368]            if not handled:
+[369]                break
+[370]            dismissed = True
+[371]            await asyncio.sleep(0.3)
+[372]        return dismissed
+[373]
+[374]    async def _ensure_agreement_checked(self) -> bool:
+[375]        checkbox_selectors = [
+[376]            "xpath=//div[contains(@class,'agreements')]//input[@type='checkbox']",
+[377]            "div.agreements input[type='checkbox']",
+[378]        ]
+[379]        for selector in checkbox_selectors:
+[380]            try:
+[381]                locator = self.context_page.locator(selector).first
+[382]                if await locator.count() <= 0:
+[383]                    continue
+[384]                checked = await locator.is_checked()
+[385]                if not checked:
+[386]                    await locator.click(timeout=2500, force=True)
+[387]                    await asyncio.sleep(0.2)
+[388]                if await locator.is_checked():
+[389]                    return True
+[390]            except Exception:
+[391]                continue
+[392]
+[393]        clicked = await self._try_click(
+[394]            selectors=[
+[395]                "xpath=//div[contains(@class,'agreements')]//*[local-name()='svg']",
+[396]                "xpath=//div[contains(@class,'agreements')]//label",
+[397]            ],
+[398]            step="agree_checkbox_fallback",
+[399]        )
+[400]        if clicked:
+[401]            await asyncio.sleep(0.2)
+[402]
+[403]        return await self._force_check_agreement()
+[404]
+[405]    async def _force_check_agreement(self) -> bool:
+[406]        try:
+[407]            checked = await self.context_page.evaluate(
+[408]                """() => {
+[409]                    const isVisible = (el) => {
+[410]                        if (!el) return false;
+[411]                        const rect = el.getBoundingClientRect();
+[412]                        const style = window.getComputedStyle(el);
+[413]                        return (
+[414]                            rect.width > 0 &&
+[415]                            rect.height > 0 &&
+[416]                            style.visibility !== "hidden" &&
+[417]                            style.display !== "none"
+[418]                        );
+[419]                    };
+[420]                    const clickNode = (node) => {
+[421]                        if (!node || !isVisible(node)) return false;
+[422]                        const clickable = node.closest("label, button, [role='checkbox'], [role='button'], [tabindex], div") || node;
+[423]                        try {
+[424]                            clickable.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+[425]                            clickable.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+[426]                            clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+[427]                            if (typeof clickable.click === "function") clickable.click();
+[428]                            return true;
+[429]                        } catch (_) {
+[430]                            return false;
+[431]                        }
+[432]                    };
+[433]
+[434]                    const containers = Array.from(document.querySelectorAll("div.login-container"));
+[435]                    for (const container of containers) {
+[436]                        if (!isVisible(container)) continue;
+[437]                        const agreement = container.querySelector("div.agreements");
+[438]                        if (!agreement || !isVisible(agreement)) continue;
+[439]
+[440]                        const input = agreement.querySelector("input[type='checkbox']");
+[441]                        if (input && input.checked) return true;
+[442]
+[443]                        const candidates = [
+[444]                            agreement.querySelector("input[type='checkbox']"),
+[445]                            agreement.querySelector("label"),
+[446]                            agreement.querySelector("svg"),
+[447]                            agreement.querySelector("span"),
+[448]                            agreement,
+[449]                        ];
+[450]                        for (const node of candidates) {
+[451]                            if (!node) continue;
+[452]                            clickNode(node);
+[453]                            if (input && input.checked) return true;
+[454]                        }
+[455]
+[456]                        const rect = agreement.getBoundingClientRect();
+[457]                        const probeX = rect.left + Math.min(14, Math.max(6, rect.width * 0.08));
+[458]                        const probeY = rect.top + rect.height / 2;
+[459]                        const top = document.elementFromPoint(probeX, probeY);
+[460]                        if (top) {
+[461]                            clickNode(top);
+[462]                            if (input && input.checked) return true;
+[463]                        }
+[464]                    }
+[465]                    return false;
+[466]                }"""
+[467]            )
+[468]            if checked:
+[469]                utils.logger.info("[XiaoHongShuLogin._force_check_agreement] Agreement checked by evaluate")
+[470]                return True
+[471]        except Exception as e:
+[472]            utils.logger.debug(f"[XiaoHongShuLogin._force_check_agreement] Failed: {e}")
+[473]        return False
+[474]
+[475]    async def _is_phone_login_dialog_visible(self) -> bool:
+[476]        try:
+[477]            visible = await self.context_page.evaluate(
+[478]                """() => {
+[479]                    const isVisible = (el) => {
+[480]                        if (!el) return false;
+[481]                        const rect = el.getBoundingClientRect();
+[482]                        const style = window.getComputedStyle(el);
+[483]                        return (
+[484]                            rect.width > 0 &&
+[485]                            rect.height > 0 &&
+[486]                            style.visibility !== "hidden" &&
+[487]                            style.display !== "none"
+[488]                        );
+[489]                    };
+[490]                    const containers = Array.from(document.querySelectorAll("div.login-container"));
+[491]                    for (const container of containers) {
+[492]                        if (!isVisible(container)) continue;
+[494]                        if (text.includes("手机号登录") || text.includes("输入验证码")) {
+[495]                            return true;
+[496]                        }
+[497]                        const phoneInput = container.querySelector("input[placeholder*='手机号']");
+[498]                        const codeInput = container.querySelector("input[placeholder*='验证码']");
+[499]                        if (phoneInput && codeInput) return true;
+[500]                    }
+[501]                    return false;
+[502]                }"""
+[503]            )
+[504]            return bool(visible)
+[505]        except Exception as e:
+[506]            utils.logger.debug(f"[XiaoHongShuLogin._is_phone_login_dialog_visible] Failed: {e}")
+[507]        return False
+[508]
+[509]    async def _click_phone_submit_button(self, step: str = "phone_submit") -> bool:
+[510]        selectors = [
+[511]            "xpath=//div[contains(@class,'login-container')]//button[normalize-space(.)='登录']",
+[512]            "div.login-container button:has-text('登录')",
+[513]            "div.input-container > button",
+[514]            "button:has-text('登录')",
+[515]        ]
+[516]        if await self._try_click(selectors=selectors, step=step):
+[517]            return True
+[518]
+[519]        try:
+[520]            clicked = await self.context_page.evaluate(
+[521]                """() => {
+[522]                    const isVisible = (el) => {
+[523]                        if (!el) return false;
+[524]                        const rect = el.getBoundingClientRect();
+[525]                        const style = window.getComputedStyle(el);
+[526]                        return (
+[527]                            rect.width > 0 &&
+[528]                            rect.height > 0 &&
+[529]                            style.visibility !== "hidden" &&
+[530]                            style.display !== "none"
+[531]                        );
+[532]                    };
+[533]                    const containers = Array.from(document.querySelectorAll("div.login-container"));
+[534]                    for (const container of containers) {
+[535]                        if (!isVisible(container)) continue;
+[536]                        const buttons = Array.from(container.querySelectorAll("button"));
+[537]                        for (const btn of buttons) {
+[538]                            if (!isVisible(btn)) continue;
+[540]                            if (btn.disabled) continue;
+[541]                            btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+[542]                            btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+[543]                            btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+[544]                            btn.click();
+[545]                            return true;
+[546]                        }
+[547]                    }
+[548]                    return false;
+[549]                }"""
+[550]            )
+[551]            if clicked:
+[552]                utils.logger.info(f"[XiaoHongShuLogin._click_phone_submit_button] Clicked by evaluate step={step}")
+[553]                return True
+[554]        except Exception as e:
+[555]            utils.logger.debug(f"[XiaoHongShuLogin._click_phone_submit_button] evaluate failed: {e}")
+[556]
+[557]        try:
+[558]            await self.context_page.keyboard.press("Enter")
+[559]            utils.logger.info(f"[XiaoHongShuLogin._click_phone_submit_button] Pressed Enter step={step}")
+[560]            return True
+[561]        except Exception as e:
+[562]            utils.logger.debug(f"[XiaoHongShuLogin._click_phone_submit_button] Enter fallback failed: {e}")
+[563]        return False
+[564]
+[565]    async def _is_phone_submit_processing(self) -> bool:
+[566]        try:
+[567]            loading = await self.context_page.evaluate(
+[568]                """() => {
+[569]                    const isVisible = (el) => {
+[570]                        if (!el) return false;
+[571]                        const rect = el.getBoundingClientRect();
+[572]                        const style = window.getComputedStyle(el);
+[573]                        return (
+[574]                            rect.width > 0 &&
+[575]                            rect.height > 0 &&
+[576]                            style.visibility !== "hidden" &&
+[577]                            style.display !== "none"
+[578]                        );
+[579]                    };
+[580]                    const containers = Array.from(document.querySelectorAll("div.login-container"));
+[581]                    for (const container of containers) {
+[582]                        if (!isVisible(container)) continue;
+[583]                        const buttons = Array.from(container.querySelectorAll("button"));
+[584]                        for (const btn of buttons) {
+[585]                            if (!isVisible(btn)) continue;
+[587]                            if (txt.includes("验证中") || txt.includes("登录中") || txt.includes("处理中")) {
+[588]                                return true;
+[589]                            }
+[590]                        }
+[591]                    }
+[592]                    return false;
+[593]                }"""
+[594]            )
+[595]            return bool(loading)
+[596]        except Exception as e:
+[597]            utils.logger.debug(f"[XiaoHongShuLogin._is_phone_submit_processing] Failed: {e}")
+[598]        return False
+[599]
+[600]    async def _click_send_sms_button(self, step: str = "sms_send") -> bool:
+[601]        selectors = [
+[602]            "xpath=//div[contains(@class,'login-container')]//label[contains(@class,'auth-code')]//*[contains(normalize-space(.),'获取验证码')]",
+[603]            "xpath=//div[contains(@class,'login-container')]//button[contains(normalize-space(.),'获取验证码')]",
+[604]            "div.login-container label.auth-code > span",
+[605]            "div.login-container span:has-text('获取验证码')",
+[606]            "div.login-container button:has-text('获取验证码')",
+[607]        ]
+[608]        if await self._try_click(selectors=selectors, step=step):
+[609]            return True
+[610]
+[611]        try:
+[612]            clicked = await self.context_page.evaluate(
+[613]                """() => {
+[614]                    const isVisible = (el) => {
+[615]                        if (!el) return false;
+[616]                        const rect = el.getBoundingClientRect();
+[617]                        const style = window.getComputedStyle(el);
+[618]                        return (
+[619]                            rect.width > 0 &&
+[620]                            rect.height > 0 &&
+[621]                            style.visibility !== "hidden" &&
+[622]                            style.display !== "none"
+[623]                        );
+[624]                    };
+[626]                    const containers = Array.from(document.querySelectorAll("div.login-container"));
+[627]                    for (const container of containers) {
+[628]                        if (!isVisible(container)) continue;
+[629]                        const phoneInput = container.querySelector("input[placeholder*='手机号']");
+[630]                        const codeInput = container.querySelector("input[placeholder*='验证码']");
+[631]                        if (!phoneInput || !codeInput) continue;
+[632]                        const candidates = Array.from(
+[633]                            container.querySelectorAll("label.auth-code > span, label.auth-code > button, button, span")
+[634]                        );
+[635]                        for (const candidate of candidates) {
+[636]                            if (!isVisible(candidate)) continue;
+[637]                            const text = normalize(candidate.innerText || candidate.textContent || "");
+[638]                            if (!text || !text.includes("获取验证码")) continue;
+[639]                            const clickable = candidate.closest("button, label, [role='button'], [tabindex]") || candidate;
+[640]                            if ("disabled" in clickable && clickable.disabled) continue;
+[641]                            try {
+[642]                                clickable.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+[643]                                clickable.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+[644]                                clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+[645]                                clickable.click();
+[646]                                return true;
+[647]                            } catch (_) {
+[648]                                continue;
+[649]                            }
+[650]                        }
+[651]                    }
+[652]                    return false;
+[653]                }"""
+[654]            )
+[655]            if clicked:
+[656]                utils.logger.info(f"[XiaoHongShuLogin._click_send_sms_button] Clicked by evaluate step={step}")
+[657]                return True
+[658]        except Exception as e:
+[659]            utils.logger.debug(f"[XiaoHongShuLogin._click_send_sms_button] evaluate failed: {e}")
+[660]
+[661]        return False
+[662]
+[663]    def _is_sms_send_confirmed(self, button_text: str) -> bool:
+[665]        if not normalized:
+[666]            return False
+[667]        if normalized in {"获取验证码", "+86"}:
+[668]            return False
+[670]            return False
+[672]            return True
+[674]            return True
+[675]        if "重发" in normalized or "重新发送" in normalized:
+[676]            return True
+[677]        return False
+[678]
+[679]    async def _get_sms_button_text(self, login_container_ele) -> str:
+[680]        try:
+[681]            text = await self.context_page.evaluate(
+[682]                """() => {
+[683]                    const isVisible = (el) => {
+[684]                        if (!el) return false;
+[685]                        const rect = el.getBoundingClientRect();
+[686]                        const style = window.getComputedStyle(el);
+[687]                        return (
+[688]                            rect.width > 0 &&
+[689]                            rect.height > 0 &&
+[690]                            style.visibility !== "hidden" &&
+[691]                            style.display !== "none"
+[692]                        );
+[693]                    };
+[695]                    const containers = Array.from(document.querySelectorAll("div.login-container"));
+[696]                    for (const container of containers) {
+[697]                        if (!isVisible(container)) continue;
+[698]                        const phoneInput = container.querySelector("input[placeholder*='手机号']");
+[699]                        const codeInput = container.querySelector("input[placeholder*='验证码']");
+[700]                        if (!phoneInput || !codeInput) continue;
+[701]                        const authScopes = Array.from(
+[702]                            container.querySelectorAll("label.auth-code, .auth-code")
+[703]                        );
+[704]                        for (const scope of authScopes) {
+[705]                            if (!isVisible(scope)) continue;
+[706]                            const nodes = Array.from(scope.querySelectorAll("span, button, div"));
+[707]                            for (const node of nodes) {
+[708]                                if (!isVisible(node)) continue;
+[709]                                const txt = normalize(node.innerText || node.textContent || "");
+[710]                                if (!txt) continue;
+[712]                                if (
+[713]                                    txt.includes("获取验证码") ||
+[714]                                    txt.includes("重发") ||
+[715]                                    txt.includes("重新发送") ||
+[718]                                ) {
+[719]                                    return txt;
+[720]                                }
+[721]                            }
+[722]                        }
+[723]                    }
+[724]                    return "";
+[725]                }"""
+[726]            )
+[727]            if text:
+[728]                return str(text).strip()
+[729]        except Exception:
+[730]            pass
+[731]
+[732]        selectors = [
+[733]            "label.auth-code > span",
+[734]            "label.auth-code > button",
+[735]            "label.auth-code",
+[736]            "span:has-text('获取验证码')",
+[737]            "button:has-text('获取验证码')",
+[738]        ]
+[739]        for selector in selectors:
+[740]            try:
+[741]                ele = await login_container_ele.query_selector(selector)
+[742]                if not ele:
+[743]                    ele = await self.context_page.query_selector(selector)
+[744]                if not ele:
+[745]                    continue
+[746]                txt = (await ele.inner_text() or "").strip()
+[749]                    continue
+[750]                if txt:
+[751]                    return txt
+[752]            except Exception:
+[753]                continue
+[754]        return ""
+[755]
+[756]    def _extract_sms_block_reason(self, page_text: str) -> Optional[str]:
+[757]        text = page_text or ""
+[758]        markers = [
+[759]            ("请先阅读并同意相关协议", "agreement_not_checked"),
+[760]            ("请先勾选", "agreement_not_checked"),
+[761]            ("请通过验证", "captcha/verification"),
+[762]            ("安全验证", "captcha/verification"),
+[763]            ("操作频繁", "rate_limited"),
+[764]            ("发送频繁", "rate_limited"),
+[765]            ("IP存在风险", "ip_restricted"),
+[766]            ("安全限制", "ip_restricted"),
+[767]            ("300012", "ip_restricted"),
+[768]        ]
+[769]        for marker, reason in markers:
+[770]            if marker in text:
+[771]                return reason
+[772]        return None
+[773]
+[774]    def _extract_login_submit_block_reason(self, page_text: str) -> Optional[str]:
+[775]        text = page_text or ""
+[776]        markers = [
+[777]            ("验证码错误", "invalid_sms_code"),
+[778]            ("验证码有误", "invalid_sms_code"),
+[779]            ("验证码失效", "expired_sms_code"),
+[780]            ("验证码过期", "expired_sms_code"),
+[781]            ("请重新获取验证码", "expired_sms_code"),
+[782]            ("请通过验证", "captcha/verification"),
+[783]            ("安全验证", "captcha/verification"),
+[784]            ("操作频繁", "rate_limited"),
+[785]            ("IP存在风险", "ip_restricted"),
+[786]            ("安全限制", "ip_restricted"),
+[787]            ("300012", "ip_restricted"),
+[788]            ("登录频繁", "rate_limited"),
+[789]            ("稍后再试", "rate_limited"),
+[790]        ]
+[791]        for marker, reason in markers:
+[792]            if marker in text:
+[793]                return reason
+[794]        return None
+[795]
+[796]    @retry(stop=stop_after_attempt(600), wait=wait_fixed(1), retry=retry_if_result(lambda value: value is False))
+[797]    async def check_login_state(self, no_logged_in_session: str) -> bool:
+[798]        """
+[799]            Check if the current login status is successful and return True otherwise return False
+[800]            retry decorator will retry 600 times if the return value is False, and the retry interval is 1 second
+[801]            if max retry times reached, raise RetryError
+[802]        """
+[803]        # Periodic screenshot for debugging
+[804]        loop_count = getattr(self, '_check_loop_count', 0)
+[805]        self._check_loop_count = loop_count + 1
+[806]        
+[807]        if self._check_loop_count % 5 == 0:
+[808]            try:
+[809]                if self._check_loop_count % 20 == 0:
+[810]                    await self._dump_page_screenshot("check_login_state")
+[811]            except Exception as e:
+[812]                utils.logger.debug(f"Failed to take browser screenshot: {e}")
+[813]
+[814]        page_content = await self.context_page.content()
+[815]        if "请通过验证" in page_content:
+[816]            utils.logger.info("[XiaoHongShuLogin.check_login_state] CAPTCHA or verification detected on page")
+[817]        dismissed = await self._dismiss_known_blockers(rounds=2)
+[818]        if not dismissed and await self._has_visible_text("同意并继续"):
+[819]            stuck = getattr(self, "_agreement_dialog_stuck_count", 0) + 1
+[820]            self._agreement_dialog_stuck_count = stuck
+[821]            if stuck >= 15:
+[822]                raise RuntimeError("agreement_dialog_stuck")
+[823]        else:
+[824]            self._agreement_dialog_stuck_count = 0
+[825]
+[826]        if config.LOGIN_TYPE == "phone":
+[827]            submit_reason = self._extract_login_submit_block_reason(page_content)
+[828]            if submit_reason in {"invalid_sms_code", "expired_sms_code", "captcha/verification", "rate_limited", "ip_restricted"}:
+[829]                raise RuntimeError(f"phone_login_blocked:{submit_reason}")
+[830]            if dismissed:
+[831]                await self._ensure_agreement_checked()
+[832]                await asyncio.sleep(0.2)
+[833]                if await self._click_phone_submit_button(step="sms_submit_retry_after_agreement"):
+[834]                    submit_attempts = int(getattr(self, "_phone_submit_attempts", 0)) + 1
+[835]                    self._phone_submit_attempts = submit_attempts
+[836]                    self._phone_submit_last_retry_loop = self._check_loop_count
+[837]                    utils.logger.info(
+[838]                        f"[XiaoHongShuLogin.check_login_state] SMS_SUBMIT_RETRY_AFTER_AGREEMENT attempt={submit_attempts}"
+[839]                    )
+[840]                    await asyncio.sleep(0.35)
+[841]                    await self._dismiss_known_blockers(rounds=2)
+[842]
+[843]            if getattr(self, "_phone_submit_loop_start", None) is None:
+[844]                self._phone_submit_loop_start = self._check_loop_count
+[845]
+[846]            dialog_visible = await self._is_phone_login_dialog_visible()
+[847]            loading = await self._is_phone_submit_processing()
+[848]            if dialog_visible:
+[849]                elapsed_loops = self._check_loop_count - int(getattr(self, "_phone_submit_loop_start", self._check_loop_count))
+[850]                last_retry_loop = int(getattr(self, "_phone_submit_last_retry_loop", 0))
+[851]                submit_attempts = int(getattr(self, "_phone_submit_attempts", 1))
+[852]
+[853]                if not loading and (self._check_loop_count - last_retry_loop) >= 15 and submit_attempts < 4:
+[854]                    await self._ensure_agreement_checked()
+[855]                    await asyncio.sleep(0.2)
+[856]                    if await self._click_phone_submit_button(step="sms_submit_retry_watchdog"):
+[857]                        submit_attempts += 1
+[858]                        self._phone_submit_attempts = submit_attempts
+[859]                        self._phone_submit_last_retry_loop = self._check_loop_count
+[860]                        utils.logger.info(
+[861]                            f"[XiaoHongShuLogin.check_login_state] SMS_SUBMIT_RETRY_WATCHDOG attempt={submit_attempts}"
+[862]                        )
+[863]                        await asyncio.sleep(0.35)
+[864]                        await self._dismiss_known_blockers(rounds=2)
+[865]
+[866]                if elapsed_loops >= 45 and submit_attempts >= 2 and not loading:
+[867]                    raise RuntimeError("phone_login_blocked:submit_no_effect")
+[868]
+[869]        current_cookie = await self.browser_context.cookies()
+[870]        _, cookie_dict = utils.convert_cookies(current_cookie)
+[871]        current_web_session = cookie_dict.get("web_session")
+[872]        
+[873]        if self._check_loop_count % 10 == 0:
+[874]            utils.logger.info(f"[XiaoHongShuLogin.check_login_state] Watching for session change... Current: {current_web_session}")
+[875]
+[876]        if current_web_session and current_web_session != no_logged_in_session:
+[877]            utils.logger.info(f"[XiaoHongShuLogin.check_login_state] Login successful! New session detected: {current_web_session}")
+[878]            return True
+[879]        return False
+[880]
+[881]    async def begin(self):
+[882]        """Start login xiaohongshu"""
+[883]        utils.logger.info("[XiaoHongShuLogin.begin] Begin login xiaohongshu ...")
+[884]        if config.LOGIN_TYPE == "qrcode":
+[885]            await self.login_by_qrcode()
+[886]        elif config.LOGIN_TYPE == "phone":
+[887]            await self.login_by_mobile()
+[888]        elif config.LOGIN_TYPE == "cookie":
+[889]            await self.login_by_cookies()
+[890]        else:
+[891]            raise ValueError("[XiaoHongShuLogin.begin]I nvalid Login Type Currently only supported qrcode or phone or cookies ...")
+[892]
+[893]    async def login_by_mobile(self):
+[894]        """Login xiaohongshu by mobile"""
+[895]        utils.logger.info("[XiaoHongShuLogin.login_by_mobile] Begin login xiaohongshu by mobile ...")
+[896]        normalized_phone = self._normalize_phone()
+[897]        if not normalized_phone:
+[898]            utils.logger.error("[XiaoHongShuLogin.login_by_mobile] Missing login phone number")
+[899]            sys.exit()
+[900]        await asyncio.sleep(1)
+[901]        restriction = await self._detect_access_restriction()
+[902]        if restriction:
+[903]            utils.logger.error(
+[904]                f"[XiaoHongShuLogin.login_by_mobile] XHS access restricted before login flow, marker={restriction}"
+[905]            )
+[906]            await self._dump_page_screenshot("login_by_mobile_access_restricted")
+[907]            sys.exit()
+[908]        login_container_ele = await self._wait_login_container()
+[909]        if not login_container_ele:
+[910]            clicked_login = await self._try_click(
+[911]                selectors=[
+[912]                    "xpath=//*[@id='app']/div[1]/div[2]/div[1]/ul/div[1]/button",
+[913]                    ".side-bar-component.login-btn button",
+[914]                    "button.login-btn",
+[915]                    "span.login-btn",
+[916]                    "div.login-btn",
+[917]                    "button:has-text('登录')",
+[918]                    "a:has-text('登录')",
+[919]                    "xpath=//button[contains(.,'登录')]",
+[920]                ],
+[921]                step="open_login_dialog",
+[922]            )
+[923]            if not clicked_login:
+[924]                clicked_login = await self._try_click_login_by_text()
+[925]            if not clicked_login:
+[926]                await self._reset_auth_state_for_phone_login()
+[927]                clicked_login = await self._try_click(
+[928]                    selectors=[
+[929]                        ".side-bar-component.login-btn button",
+[930]                        "button.login-btn",
+[931]                        "span.login-btn",
+[932]                        "div.login-btn",
+[933]                        "button:has-text('登录')",
+[934]                        "a:has-text('登录')",
+[935]                        "xpath=//button[contains(.,'登录')]",
+[936]                    ],
+[937]                    step="open_login_dialog_after_reset",
+[938]                )
+[939]                if not clicked_login:
+[940]                    clicked_login = await self._try_click_login_by_text()
+[941]            await asyncio.sleep(1)
+[942]            login_container_ele = await self._wait_login_container()
+[943]        if not login_container_ele:
+[944]            utils.logger.error("[XiaoHongShuLogin.login_by_mobile] login dialog was not found")
+[945]            restriction = await self._detect_access_restriction()
+[946]            if restriction:
+[947]                utils.logger.error(
+[948]                    f"[XiaoHongShuLogin.login_by_mobile] XHS access restricted, marker={restriction}"
+[949]                )
+[950]            await self._dump_page_screenshot("login_by_mobile_no_dialog")
+[951]            sys.exit()
+[952]
+[953]        # Some versions default to QR tab and require switching to phone login tab.
+[954]        await self._try_click(
+[955]            selectors=[
+[956]                "xpath=//div[contains(@class,'login-container')]//div[contains(@class,'other-method')]/div[1]",
+[957]                "xpath=//div[contains(@class,'login-container')]//*[contains(text(),'手机号登录')]",
+[958]            ],
+[959]            step="switch_to_phone_tab",
+[960]        )
+[961]
+[962]        await asyncio.sleep(0.5)
+[963]        input_ele = await login_container_ele.query_selector("label.phone > input")
+[964]        if not input_ele:
+[965]            input_ele = await login_container_ele.query_selector("input[placeholder*='手机号']")
+[966]        if not input_ele:
+[967]            input_ele = await self.context_page.query_selector("input[placeholder*='手机号']")
+[968]        if not input_ele:
+[969]            utils.logger.error("[XiaoHongShuLogin.login_by_mobile] phone input not found")
+[970]            await self._dump_page_screenshot("login_by_mobile_no_phone_input")
+[971]            sys.exit()
+[972]
+[973]        await input_ele.fill(normalized_phone)
+[974]        await asyncio.sleep(0.5)
+[975]
+[976]        # Agreement checkbox may be required before getting SMS code.
+[977]        await self._ensure_agreement_checked()
+[978]        await self._dismiss_known_blockers(rounds=2)
+[979]
+[980]        sms_send_confirmed = False
+[981]        sms_btn_text_after_click = ""
+[982]        block_reason: Optional[str] = None
+[983]        for send_attempt in range(1, 4):
+[984]            await self._ensure_agreement_checked()
+[985]            await self._dismiss_known_blockers(rounds=2)
+[986]
+[987]            if not await self._click_send_sms_button(step=f"sms_send_attempt_{send_attempt}"):
+[988]                utils.logger.warning(
+[989]                    f"[XiaoHongShuLogin.login_by_mobile] SMS send button click failed attempt={send_attempt}"
+[990]                )
+[991]                continue
+[992]
+[993]            utils.logger.info(f"[XiaoHongShuLogin.login_by_mobile] SMS_SEND_CLICKED attempt={send_attempt}")
+[994]            await asyncio.sleep(1.0)
+[995]            await self._dismiss_known_blockers(rounds=3)
+[996]            await asyncio.sleep(0.25)
+[997]
+[998]            sms_btn_text_after_click = await self._get_sms_button_text(login_container_ele)
+[999]            if sms_btn_text_after_click:
+[1000]                if self._is_sms_send_confirmed(sms_btn_text_after_click):
+[1001]                    sms_send_confirmed = True
+[1002]                    utils.logger.info(
+[1003]                        f"[XiaoHongShuLogin.login_by_mobile] SMS_SEND_CONFIRMED attempt={send_attempt} button_text={sms_btn_text_after_click}"
+[1004]                    )
+[1005]                    break
+[1006]                utils.logger.info(
+[1007]                    f"[XiaoHongShuLogin.login_by_mobile] SMS_SEND_STATE attempt={send_attempt} button_text={sms_btn_text_after_click}"
+[1008]                )
+[1009]
+[1010]            page_text = await self.context_page.content()
+[1011]            block_reason = self._extract_sms_block_reason(page_text)
+[1012]            if block_reason:
+[1013]                utils.logger.warning(
+[1014]                    f"[XiaoHongShuLogin.login_by_mobile] SMS send may be blocked by {block_reason}"
+[1015]                )
+[1016]                if block_reason == "agreement_not_checked":
+[1017]                    await self._force_check_agreement()
+[1018]                    await asyncio.sleep(0.35)
+[1019]                    continue
+[1020]                if block_reason in {"captcha/verification", "rate_limited", "ip_restricted"}:
+[1021]                    break
+[1022]
+[1023]        page_text = await self.context_page.content()
+[1024]        block_reason = block_reason or self._extract_sms_block_reason(page_text)
+[1025]        if ("IP存在风险" in page_text) or ("安全限制" in page_text) or ("300012" in page_text):
+[1026]            utils.logger.error("[XiaoHongShuLogin.login_by_mobile] XHS access restricted after sms click")
+[1027]        if ("请通过验证" in page_text) or ("安全验证" in page_text):
+[1028]            utils.logger.warning("[XiaoHongShuLogin.login_by_mobile] SMS send may be blocked by captcha/verification")
+[1029]
+[1030]        if not sms_send_confirmed:
+[1031]            final_reason = block_reason or "sms_send_no_effect"
+[1032]            utils.logger.error(
+[1033]                f"[XiaoHongShuLogin.login_by_mobile] phone_login_blocked:{final_reason}"
+[1034]            )
+[1035]            await self._dump_page_screenshot("login_by_mobile_sms_send_not_confirmed")
+[1036]            sys.exit(1)
+[1037]
+[1038]        sms_code_input_ele = await login_container_ele.query_selector("label.auth-code > input")
+[1039]        if not sms_code_input_ele:
+[1040]            sms_code_input_ele = await login_container_ele.query_selector("input[placeholder*='验证码']")
+[1041]        if not sms_code_input_ele:
+[1042]            sms_code_input_ele = await self.context_page.query_selector("input[placeholder*='验证码']")
+[1043]        if not sms_code_input_ele:
+[1044]            utils.logger.error("[XiaoHongShuLogin.login_by_mobile] sms code input not found")
+[1045]            await self._dump_page_screenshot("login_by_mobile_no_sms_input")
+[1046]            sys.exit()
+[1047]
+[1048]        submit_btn_ele = await login_container_ele.query_selector("div.input-container > button")
+[1049]        if not submit_btn_ele:
+[1050]            submit_btn_ele = await login_container_ele.query_selector("button:has-text('登录')")
+[1051]        if not submit_btn_ele:
+[1052]            submit_btn_ele = await self.context_page.query_selector("button:has-text('登录')")
+[1053]        if not submit_btn_ele:
+[1054]            utils.logger.error("[XiaoHongShuLogin.login_by_mobile] login submit button not found")
+[1055]            await self._dump_page_screenshot("login_by_mobile_no_submit_button")
+[1056]            sys.exit()
+[1057]        cache_client = CacheFactory.create_cache(config.CACHE_TYPE_MEMORY)
+[1058]        max_get_sms_code_time = 60 * 2  # Maximum time to get verification code is 2 minutes
+[1059]        no_logged_in_session = ""
+[1060]        while max_get_sms_code_time > 0:
+[1061]            utils.logger.info(
+[1062]                f"[XiaoHongShuLogin.login_by_mobile] SMS_CODE_REQUIRED phone={normalized_phone} remaining={max_get_sms_code_time}s"
+[1063]            )
+[1064]            await asyncio.sleep(1)
+[1065]            sms_code_key = f"xhs_{normalized_phone}"
+[1066]            sms_code_value = cache_client.get(sms_code_key)
+[1067]            sms_code = sms_code_value.decode().strip() if sms_code_value else ""
+[1068]            if not sms_code:
+[1069]                sms_code = self._read_sms_code_from_file() or ""
+[1070]            if not sms_code:
+[1071]                max_get_sms_code_time -= 1
+[1072]                continue
+[1073]
+[1074]            current_cookie = await self.browser_context.cookies()
+[1075]            _, cookie_dict = utils.convert_cookies(current_cookie)
+[1076]            no_logged_in_session = cookie_dict.get("web_session")
+[1077]
+[1078]            await sms_code_input_ele.fill(value=sms_code)  # Enter SMS verification code
+[1079]            await asyncio.sleep(0.5)
+[1080]            await self._ensure_agreement_checked()
+[1081]            await asyncio.sleep(0.5)
+[1082]
+[1083]            await self._dismiss_known_blockers(rounds=2)
+[1084]            submit_clicked = await self._click_phone_submit_button(step="sms_submit")
+[1085]            if not submit_clicked:
+[1086]                await submit_btn_ele.click()
+[1087]            self._phone_submit_attempts = 1
+[1088]            self._phone_submit_last_retry_loop = 0
+[1089]            self._phone_submit_loop_start = None
+[1090]            utils.logger.info("[XiaoHongShuLogin.login_by_mobile] SMS_SUBMIT_CLICKED attempt=1")
+[1091]            await asyncio.sleep(0.5)
+[1092]            dismissed_after_submit = await self._dismiss_known_blockers(rounds=5)
+[1093]            if dismissed_after_submit:
+[1094]                await self._ensure_agreement_checked()
+[1095]                await asyncio.sleep(0.2)
+[1096]                if await self._click_phone_submit_button(step="sms_submit_retry_after_agreement"):
+[1097]                    self._phone_submit_attempts = 2
+[1098]                    utils.logger.info("[XiaoHongShuLogin.login_by_mobile] SMS_SUBMIT_RETRY_AFTER_AGREEMENT attempt=2")
+[1099]                    await asyncio.sleep(0.5)
+[1100]                    await self._dismiss_known_blockers(rounds=3)
+[1101]
+[1102]            # TODO: Should also check if the verification code is correct, as it may be incorrect
+[1103]            break
+[1104]
+[1105]        if max_get_sms_code_time <= 0:
+[1106]            utils.logger.info("[XiaoHongShuLogin.login_by_mobile] Did not receive sms code in time, exit login flow")
+[1107]            sys.exit()
+[1108]
+[1109]        try:
+[1110]            await self.check_login_state(no_logged_in_session)
+[1111]        except RetryError:
+[1112]            utils.logger.info("[XiaoHongShuLogin.login_by_mobile] Login xiaohongshu failed by mobile login method ...")
+[1113]            sys.exit(1)
+[1114]        except RuntimeError as e:
+[1115]            utils.logger.error(f"[XiaoHongShuLogin.login_by_mobile] Login interrupted by blocker: {e}")
+[1116]            sys.exit(1)
+[1117]
+[1118]        wait_redirect_seconds = 5
+[1119]        utils.logger.info(f"[XiaoHongShuLogin.login_by_mobile] Login successful then wait for {wait_redirect_seconds} seconds redirect ...")
+[1120]        await asyncio.sleep(wait_redirect_seconds)
+[1121]
+[1122]    async def login_by_qrcode(self):
+[1123]        """login xiaohongshu website and keep webdriver login state"""
+[1124]        utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Begin login xiaohongshu by qrcode ...")
+[1125]        # login_selector = "div.login-container > div.left > div.qrcode > img"
+[1126]        qrcode_img_selector = "xpath=//img[@class='qrcode-img']"
+[1127]        # find login qrcode
+[1128]        base64_qrcode_img = await utils.find_login_qrcode(
+[1129]            self.context_page,
+[1130]            selector=qrcode_img_selector
+[1131]        )
+[1132]        if not base64_qrcode_img:
+[1133]            utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] login failed , have not found qrcode please check ....")
+[1134]            # if this website does not automatically popup login dialog box, we will manual click login button
+[1135]            await asyncio.sleep(0.5)
+[1136]            login_button_ele = self.context_page.locator("xpath=//*[@id='app']/div[1]/div[2]/div[1]/ul/div[1]/button")
+[1137]            await login_button_ele.click()
+[1138]            base64_qrcode_img = await utils.find_login_qrcode(
+[1139]                self.context_page,
+[1140]                selector=qrcode_img_selector
+[1141]            )
+[1142]            if not base64_qrcode_img:
+[1143]                sys.exit()
+[1144]
+[1145]        utils.logger.info(f"QRCODE_BASE64:{base64_qrcode_img}")
+[1146]
+[1147]        # get not logged session
+[1148]        current_cookie = await self.browser_context.cookies()
+[1149]        _, cookie_dict = utils.convert_cookies(current_cookie)
+[1150]        no_logged_in_session = cookie_dict.get("web_session")
+[1151]
+[1152]        # show login qrcode
+[1153]        # fix issue #12
+[1154]        # we need to use partial function to call show_qrcode function and run in executor
+[1155]        # then current asyncio event loop will not be blocked
+[1156]        partial_show_qrcode = functools.partial(utils.show_qrcode, base64_qrcode_img)
+[1157]        asyncio.get_running_loop().run_in_executor(executor=None, func=partial_show_qrcode)
+[1158]
+[1159]        utils.logger.info(f"[XiaoHongShuLogin.login_by_qrcode] waiting for scan code login, remaining time is 120s")
+[1160]        try:
+[1161]            await self.check_login_state(no_logged_in_session)
+[1162]        except RetryError:
+[1163]            utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Login xiaohongshu failed by qrcode login method ...")
+[1164]            sys.exit()
+[1165]
+[1166]        wait_redirect_seconds = 5
+[1167]        utils.logger.info(f"[XiaoHongShuLogin.login_by_qrcode] Login successful then wait for {wait_redirect_seconds} seconds redirect ...")
+[1168]        await asyncio.sleep(wait_redirect_seconds)
+[1169]
+[1170]    async def login_by_cookies(self):
+[1171]        """login xiaohongshu website by cookies"""
+[1172]        utils.logger.info("[XiaoHongShuLogin.login_by_cookies] Begin login xiaohongshu by cookie ...")
+[1173]        for key, value in utils.convert_str_cookie_to_dict(self.cookie_str).items():
+[1174]            if key != "web_session":  # Only set web_session cookie attribute
+[1175]                continue
+[1176]            await self.browser_context.add_cookies([{
+[1177]                'name': key,
+[1178]                'value': value,
+[1179]                'domain': ".xiaohongshu.com",
+[1180]                'path': "/"
+[1181]            }])

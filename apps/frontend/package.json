@@ -4,7 +4,7 @@
   "description": "",
   "type": "module",
   "scripts": {
-    "dev": "dotenv -e ../../.env -- next dev -p 4200",
+    "dev": "dotenv -e ../../.env -- next dev -H 0.0.0.0 -p 4200",
     "build": "next build",
     "build:sentry": "dotenv -e ../../.env -- next build",
     "start": "dotenv -e ../../.env -- next start -p 4200",

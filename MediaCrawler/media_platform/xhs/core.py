@@ -97,10 +97,16 @@ class XiaoHongShuCrawler(AbstractCrawler):
 
             # Create a client to interact with the Xiaohongshu website.
             self.xhs_client = await self.create_xhs_client(httpx_proxy_format)
-            if not await self.xhs_client.pong():
+            has_session = await self.xhs_client.pong()
+            force_phone_login = config.LOGIN_TYPE == "phone"
+            if force_phone_login or not has_session:
+                if force_phone_login and has_session:
+                    utils.logger.info(
+                        "[XiaoHongShuCrawler.start] phone login requested, force re-login flow"
+                    )
                 login_obj = XiaoHongShuLogin(
                     login_type=config.LOGIN_TYPE,
-                    login_phone="",  # input your phone number
+                    login_phone=getattr(config, "LOGIN_PHONE", ""),
                     browser_context=self.browser_context,
                     context_page=self.context_page,
                     cookie_str=config.COOKIES,
@@ -124,37 +130,81 @@ class XiaoHongShuCrawler(AbstractCrawler):
             utils.logger.info("[XiaoHongShuCrawler.start] Xhs Crawler finished ...")
 
     async def search(self) -> None:
-        """Search for notes and retrieve their comment information."""
-        utils.logger.info("[XiaoHongShuCrawler.search] Begin search Xiaohongshu keywords")
+        """
+        搜索筆記並獲取評論信息（增量爬取模式）
+        - 使用時間排序獲取最新作品
+        - 自動過濾點贊數低於閾值的作品
+        - 自動去重已爬取的作品
+        """
+        utils.logger.info("[XiaoHongShuCrawler.search] Begin search Xiaohongshu keywords (增量爬取模式)")
         xhs_limit_count = 20  # Xiaohongshu limit page fixed value
         if config.CRAWLER_MAX_NOTES_COUNT < xhs_limit_count:
             config.CRAWLER_MAX_NOTES_COUNT = xhs_limit_count
+        
+        # 確定排序方式：優先使用配置的時間排序，用於獲取最新作品
+        sort_type = SearchSortType.LATEST  # 默認使用最新排序
+        if config.SORT_TYPE:
+            try:
+                sort_type = SearchSortType(config.SORT_TYPE)
+            except ValueError:
+                utils.logger.warning(f"[XiaoHongShuCrawler.search] Invalid SORT_TYPE: {config.SORT_TYPE}, using LATEST")
+                sort_type = SearchSortType.LATEST
+        
+        utils.logger.info(f"[XiaoHongShuCrawler.search] 使用排序方式: {sort_type.value} (增量爬取建議使用 time_descending 獲取最新作品)")
+        
+        # 檢查是否啟用了點贊數過濾
+        min_liked_count = getattr(config, "XHS_MIN_LIKED_COUNT", 0)
+        if min_liked_count > 0:
+            utils.logger.info(f"[XiaoHongShuCrawler.search] 點贊數過濾已啟用，只保存點贊數 >= {min_liked_count} 的作品")
+        
         start_page = config.START_PAGE
+        min_save_target = getattr(config, "XHS_MIN_SAVE_COUNT_PER_KEYWORD", 10) or 0
+        # 读取已爬取 ID，避免重复计数
+        seen_ids = set()
+        try:
+            from pathlib import Path
+            seen_path = Path(getattr(config, "XHS_SEEN_IDS_PATH", "./data/xhs/seen_note_ids.txt"))
+            if seen_path.exists():
+                seen_ids = set(line.strip() for line in seen_path.read_text(encoding="utf-8").splitlines() if line.strip())
+        except Exception:
+            pass
+        total_processed = 0
+        total_saved = 0
+        total_skipped_low_likes = 0
+        total_skipped_duplicate = 0
+        
         for keyword in config.KEYWORDS.split(","):
-            source_keyword_var.set(keyword)
-            utils.logger.info(f"[XiaoHongShuCrawler.search] Current search keyword: {keyword}")
+            source_keyword_var.set(keyword.strip())
+            utils.logger.info(f"[XiaoHongShuCrawler.search] 當前搜索關鍵字: {keyword}")
             page = 1
+            saved_for_keyword = 0
+            processed_for_keyword = 0
+            skipped_low_for_keyword = 0
+            skipped_dup_for_keyword = 0
             search_id = get_search_id()
-            while (page - start_page + 1) * xhs_limit_count <= config.CRAWLER_MAX_NOTES_COUNT:
+            
+            while True:
                 if page < start_page:
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] Skip page {page}")
+                    utils.logger.info(f"[XiaoHongShuCrawler.search] 跳過頁面 {page}")
                     page += 1
                     continue
-
                 try:
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] search Xiaohongshu keyword: {keyword}, page: {page}")
+                    utils.logger.info(f"[XiaoHongShuCrawler.search] 搜索小紅書關鍵字: {keyword}, 頁面: {page}, 排序: {sort_type.value}")
                     note_ids: List[str] = []
                     xsec_tokens: List[str] = []
                     notes_res = await self.xhs_client.get_note_by_keyword(
                         keyword=keyword,
                         search_id=search_id,
                         page=page,
-                        sort=(SearchSortType(config.SORT_TYPE) if config.SORT_TYPE != "" else SearchSortType.GENERAL),
+                        sort=sort_type,
                     )
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] Search notes response: {notes_res}")
-                    if not notes_res or not notes_res.get("has_more", False):
-                        utils.logger.info("[XiaoHongShuCrawler.search] No more content!")
+                    utils.logger.info(f"[XiaoHongShuCrawler.search] 搜索結果響應: {notes_res}")
+                    
+                    has_more = bool(notes_res and notes_res.get("has_more", False))
+                    if not notes_res:
+                        utils.logger.info("[XiaoHongShuCrawler.search] 搜索結果為空！")
                         break
+                    
                     semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY_NUM)
                     task_list = [
                         self.get_note_detail_async_task(
@@ -165,22 +215,62 @@ class XiaoHongShuCrawler(AbstractCrawler):
                         ) for post_item in notes_res.get("items", {}) if post_item.get("model_type") not in ("rec_query", "hot_query")
                     ]
                     note_details = await asyncio.gather(*task_list)
+                    
                     for note_detail in note_details:
                         if note_detail:
+                            total_processed += 1
+                            processed_for_keyword += 1
+                            # 预过滤点赞与去重以满足最少保存量逻辑
+                            try:
+                                liked_count_val = int(note_detail.get("interact_info", {}).get("liked_count") or 0)
+                            except Exception:
+                                liked_count_val = 0
+                            note_id_val = note_detail.get("note_id")
+
+                            if min_liked_count > 0 and liked_count_val < min_liked_count:
+                                total_skipped_low_likes += 1
+                                skipped_low_for_keyword += 1
+                                continue
+                            if note_id_val in seen_ids:
+                                total_skipped_duplicate += 1
+                                skipped_dup_for_keyword += 1
+                                continue
+
                             await xhs_store.update_xhs_note(note_detail)
                             await self.get_notice_media(note_detail)
-                            note_ids.append(note_detail.get("note_id"))
+                            note_ids.append(note_id_val)
                             xsec_tokens.append(note_detail.get("xsec_token"))
+
+                            seen_ids.add(str(note_id_val))
+                            saved_for_keyword += 1
+                            total_saved += 1
+                    
                     page += 1
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] Note details: {note_details}")
+                    utils.logger.info(f"[XiaoHongShuCrawler.search] Page processed {len(note_details)} notes")
                     await self.batch_get_note_comments(note_ids, xsec_tokens)
 
                     # Sleep after each page navigation
                     await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after page {page-1}")
+                    utils.logger.info(f"[XiaoHongShuCrawler.search] Page {page-1} done, sleep {config.CRAWLER_MAX_SLEEP_SEC}s")
+
+                    if min_save_target > 0 and saved_for_keyword >= min_save_target:
+                        utils.logger.info(f"[XiaoHongShuCrawler.search] Keyword '{keyword}' reached target {saved_for_keyword}/{min_save_target}, stop paging")
+                        break
+
+                    if not has_more:
+                        utils.logger.info("[XiaoHongShuCrawler.search] No more pages.")
+                        break
                 except DataFetchError:
-                    utils.logger.error("[XiaoHongShuCrawler.search] Get note detail error")
+                    utils.logger.error("[XiaoHongShuCrawler.search] 獲取筆記詳情錯誤")
                     break
+            
+            utils.logger.info(
+                f"[XiaoHongShuCrawler.search] Keyword '{keyword}' done, processed {processed_for_keyword}, saved {saved_for_keyword}, "
+                f"skipped_low_likes {skipped_low_for_keyword}, skipped_duplicate {skipped_dup_for_keyword}"
+            )
+        
+        utils.logger.info(f"[XiaoHongShuCrawler.search] Search finished. processed={total_processed}, saved={total_saved}")
+
 
     async def get_creators_and_notes(self) -> None:
         """Get creator's notes and retrieve their comment information."""

@@ -16,12 +16,16 @@
 # 详细许可条款请参阅项目根目录下的LICENSE文件。
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException
 
-from ..schemas import CrawlerStartRequest, CrawlerStatusResponse
+from ..schemas import (
+    CrawlerStartRequest,
+    CrawlerStatusResponse,
+    LoginStatusResponse,
+    SmsCodeRequest,
+)
 from ..services import crawler_manager
+from ..services.login_checker import login_checker
 
 router = APIRouter(prefix="/crawler", tags=["crawler"])
 
@@ -36,12 +40,7 @@ async def start_crawler(request: CrawlerStartRequest):
             raise HTTPException(status_code=400, detail="Crawler is already running")
         raise HTTPException(status_code=500, detail="Failed to start crawler")
 
-    return {
-        "status": "accepted",
-        "message": "Crawler started successfully",
-        "accepted_at": datetime.now(timezone.utc).isoformat(),
-        "client_job_id": request.client_job_id,
-    }
+    return {"status": "ok", "message": "Crawler started successfully"}
 
 
 @router.post("/stop")
@@ -70,22 +69,28 @@ async def get_logs(limit: int = 100):
     return {"logs": [log.model_dump() for log in logs]}
 
 
-@router.get("/login-status/{platform}")
+@router.get("/login-status/{platform}", response_model=LoginStatusResponse)
 async def get_login_status(platform: str):
-    """
-    Check if valid login cookies exist for a platform.
-    
-    This endpoint is used to determine whether to use headless mode:
-    - If valid login exists: use headless mode (no browser window)
-    - If no valid login: use headed mode (show browser for QR code login)
-    
-    Returns:
-        has_valid_login: bool - whether valid login state exists
-        platform: str - platform name
-        cookies_found: list - list of valid cookie names found
-        last_modified: str - when cookies were last modified
-        recommendation: str - 'headless' or 'headed'
-        message: str - human-readable status
-    """
-    from ..services import login_checker
-    return login_checker.check_login_state(platform)
+    """Check if platform has valid, non-expired login cookies."""
+    result = login_checker.check_login_state(platform)
+    return LoginStatusResponse(
+        has_valid_login=result.get("has_valid_login", False),
+        platform=result.get("platform", platform),
+        recommendation=result.get("recommendation", "headed"),
+        message=result.get("message", "Unable to determine login status"),
+        cookies_found=result.get("cookies_found", []),
+    )
+
+
+@router.post("/sms-code")
+async def submit_sms_code(request: SmsCodeRequest):
+    """Submit SMS verification code for phone login."""
+    success = await crawler_manager.submit_sms_code(
+        platform=request.platform.value,
+        login_phone=request.login_phone,
+        sms_code=request.sms_code,
+        client_job_id=request.client_job_id,
+    )
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid SMS code payload")
+    return {"status": "ok", "message": "SMS code submitted"}

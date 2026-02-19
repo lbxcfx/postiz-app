@@ -5,7 +5,7 @@
 services:
   postiz-postgres:
     # ref: https://hub.docker.com/_/postgres
-    image: postgres:17-alpine # 17.0
+    image: pgvector/pgvector:pg17 # PostgreSQL 17 with pgvector extension
     container_name: postiz-postgres
     restart: always
     environment:
@@ -15,7 +15,7 @@ services:
     volumes:
       - postgres-volume:/var/lib/postgresql/data
     ports:
-      - 5432:5432
+      - 55432:5432
     networks:
       - postiz-network
   postiz-redis:
@@ -35,7 +35,7 @@ services:
     container_name: postiz-pg-admin
     restart: always
     ports:
-      - 8081:80
+      - 8082:80
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin

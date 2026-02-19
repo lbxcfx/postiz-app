@@ -88,16 +88,33 @@ def show_qrcode(qr_code) -> None:  # type: ignore
     """parse base64 encode qrcode image and show it"""
     if "," in qr_code:
         qr_code = qr_code.split(",")[1]
+    
+    # Log the base64 data for the WebUI to detect and show as a popup
+    utils.logger.info(f"QRCODE_BASE64:{qr_code}")
+
     qr_code = base64.b64decode(qr_code)
     image = Image.open(BytesIO(qr_code))
-
+    
     # Add a square border around the QR code and display it within the border to improve scanning accuracy.
     width, height = image.size
     new_image = Image.new('RGB', (width + 20, height + 20), color=(255, 255, 255))
     new_image.paste(image, (10, 10))
     draw = ImageDraw.Draw(new_image)
     draw.rectangle((0, 0, width + 19, height + 19), outline=(0, 0, 0), width=1)
-    del ImageShow.UnixViewer.options["save_all"]
+    
+    # Save QR code to file as a fallback for headless or WSL environments
+    try:
+        new_image.save("login_qrcode.png")
+        utils.logger.info("QR code saved to login_qrcode.png")
+    except Exception as e:
+        utils.logger.error(f"Failed to save QR code to file: {e}")
+
+    # Use Pillow's show() method to open a window
+    # Note: This might not work in headless or some Linux/WSL environments
+    try:
+        del ImageShow.UnixViewer.options["save_all"]
+    except (KeyError, AttributeError):
+        pass
     new_image.show()
 
 

@@ -34,6 +34,8 @@ import { MonitorController } from '@gitroom/backend/api/routes/monitor.controlle
 import { MaterialsController } from '@gitroom/backend/api/routes/materials.controller';
 import { MaterialsModule } from '@gitroom/nestjs-libraries/materials/materials.module';
 import { PublicMediaController } from '@gitroom/backend/api/routes/public-media.controller';
+import { FactoryController } from '@gitroom/backend/api/routes/factory.controller';
+import { FactoryService } from '@gitroom/backend/services/factory/factory.service';
 
 const authenticatedController = [
   UsersController,
@@ -51,6 +53,7 @@ const authenticatedController = [
   SetsController,
   ThirdPartyController,
   MaterialsController,
+  FactoryController,
 ];
 @Module({
   imports: [UploadModule, MaterialsModule],
@@ -76,6 +79,7 @@ const authenticatedController = [
     TrackService,
     ShortLinkService,
     Nowpayments,
+    FactoryService,
   ],
   get exports() {
     return [...this.imports, ...this.providers];

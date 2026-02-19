@@ -39,6 +39,10 @@ model Organization {
   usedCodes         UsedCodes[]
   users             UserOrganization[]
   webhooks          Webhooks[]
+  sourceContents    SourceContent[]
+  contentDrafts     ContentDraft[]
+  publishJobs       PublishJob[]
+  auditLogs         AuditLog[]
 }
 
 model Tags {
@@ -828,6 +832,141 @@ model mastra_workflow_snapshot {
   @@unique([workflow_name, run_id], map: "public_mastra_workflow_snapshot_workflow_name_run_id_key")
 }
 
+model SourceContent {
+  id              String          @id @default(uuid())
+  organizationId  String
+  platform        String
+  externalId      String
+  title           String?
+  content         String?         @db.Text
+  authorName      String?
+  authorId        String?
+  publishedAt     DateTime?
+  rawPayload      Json?
+  queryHash       String?
+  jobId           String?
+  tenantId        String          @default("default")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  deletedAt       DateTime?
+  organization    Organization    @relation(fields: [organizationId], references: [id])
+  mediaAssets     MediaAsset[]
+  analysisResults AnalysisResult[]
+
+  @@unique([organizationId, platform, externalId])
+  @@index([queryHash])
+  @@index([platform])
+  @@index([jobId])
+  @@index([createdAt])
+}
+
+model MediaAsset {
+  id              String        @id @default(uuid())
+  sourceContentId String
+  type            String
+  url             String
+  localPath       String?
+  sha256          String?
+  duration        Int?
+  width           Int?
+  height          Int?
+  fileSize        Int?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  sourceContent   SourceContent @relation(fields: [sourceContentId], references: [id])
+
+  @@index([sourceContentId])
+  @@index([sha256])
+}
+
+model AnalysisResult {
+  id              String        @id @default(uuid())
+  sourceContentId String
+  type            String
+  result          Json
+  modelUsed       String?
+  confidence      Float?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  sourceContent   SourceContent @relation(fields: [sourceContentId], references: [id])
+
+  @@index([sourceContentId])
+  @@index([type])
+}
+
+model ContentDraft {
+  id               String       @id @default(uuid())
+  organizationId   String
+  title            String?
+  content          String?      @db.Text
+  script           String?      @db.Text
+  score            Float?
+  reviewStatus     ReviewStatus @default(PENDING)
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  reviewNote       String?
+  sourceContentIds String?
+  productProfile   Json?
+  workflowId       String?
+  tenantId         String       @default("default")
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  deletedAt        DateTime?
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  publishJobs      PublishJob[]
+
+  @@index([organizationId])
+  @@index([reviewStatus])
+  @@index([workflowId])
+  @@index([createdAt])
+}
+
+model PublishJob {
+  id             String        @id @default(uuid())
+  organizationId String
+  contentDraftId String
+  integrationId  String
+  scheduleAt     DateTime?
+  status         PublishStatus @default(PENDING)
+  errorCode      String?
+  errorMessage   String?
+  retryCount     Int           @default(0)
+  maxRetries     Int           @default(3)
+  idempotencyKey String?       @unique
+  externalPostId String?
+  publishedAt    DateTime?
+  tenantId       String        @default("default")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  contentDraft   ContentDraft  @relation(fields: [contentDraftId], references: [id])
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([scheduleAt])
+  @@index([contentDraftId])
+}
+
+model AuditLog {
+  id             String       @id @default(uuid())
+  organizationId String
+  operator       String
+  action         String
+  resourceType   String
+  resourceId     String
+  detail         Json?
+  traceId        String?
+  tenantId       String       @default("default")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([traceId])
+  @@index([createdAt])
+}
+
 enum OrderStatus {
   PENDING
   ACCEPTED
@@ -878,4 +1017,20 @@ enum APPROVED_SUBMIT_FOR_ORDER {
   NO
   WAITING_CONFIRMATION
   YES
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REGENERATING
+}
+
+enum PublishStatus {
+  PENDING
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
 }

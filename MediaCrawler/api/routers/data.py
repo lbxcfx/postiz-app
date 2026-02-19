@@ -18,6 +18,7 @@
 
 import os
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -28,24 +29,17 @@ router = APIRouter(prefix="/data", tags=["data"])
 
 # Data directory
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
-
-
-def extract_client_job_id(filename: str) -> Optional[str]:
-    """Extract client_job_id from the filename prefix if present."""
-    prefix = "job_"
-    if not filename.startswith(prefix):
-        return None
-    remainder = filename[len(prefix):]
-    parts = remainder.split("__", 1)
-    if len(parts) < 2:
-        return None
-    return parts[0] or None
+JOB_FILE_PATTERN = re.compile(r"^job_(.+?)__")
 
 
 def get_file_info(file_path: Path) -> dict:
     """Get file information"""
     stat = file_path.stat()
     record_count = None
+    client_job_id = None
+    match = JOB_FILE_PATTERN.match(file_path.name)
+    if match:
+        client_job_id = match.group(1)
 
     # Try to get record count
     try:
@@ -54,6 +48,9 @@ def get_file_info(file_path: Path) -> dict:
                 data = json.load(f)
                 if isinstance(data, list):
                     record_count = len(data)
+        elif file_path.suffix == ".txt":  # JSONL
+            with open(file_path, "r", encoding="utf-8") as f:
+                record_count = sum(1 for line in f if line.strip())
         elif file_path.suffix == ".csv":
             with open(file_path, "r", encoding="utf-8") as f:
                 record_count = sum(1 for _ in f) - 1  # Subtract header row
@@ -67,7 +64,7 @@ def get_file_info(file_path: Path) -> dict:
         "modified_at": stat.st_mtime,
         "record_count": record_count,
         "type": file_path.suffix[1:] if file_path.suffix else "unknown",
-        "client_job_id": extract_client_job_id(file_path.name),
+        "client_job_id": client_job_id,
     }
 
 
@@ -78,7 +75,7 @@ async def list_data_files(platform: Optional[str] = None, file_type: Optional[st
         return {"files": []}
 
     files = []
-    supported_extensions = {".json", ".csv", ".xlsx", ".xls"}
+    supported_extensions = {".json", ".csv", ".xlsx", ".xls", ".txt"}
 
     for root, dirs, filenames in os.walk(DATA_DIR):
         root_path = Path(root)
@@ -161,6 +158,21 @@ async def get_file_content(file_path: str, preview: bool = True, limit: int = 10
                     "total": total,
                     "columns": list(df.columns)
                 }
+            elif full_path.suffix == ".txt":  # JSONL
+                rows = []
+                with open(full_path, "r", encoding="utf-8") as f:
+                    for i, line in enumerate(f):
+                        if not line.strip():
+                            continue
+                        if len(rows) >= limit:
+                            continue
+                        try:
+                            rows.append(json.loads(line))
+                        except:
+                            continue
+                    f.seek(0)
+                    total = sum(1 for line in f if line.strip())
+                return {"data": rows, "total": total}
             else:
                 raise HTTPException(status_code=400, detail="Unsupported file type for preview")
         except json.JSONDecodeError:
@@ -213,7 +225,7 @@ async def get_data_stats():
         "by_type": {}
     }
 
-    supported_extensions = {".json", ".csv", ".xlsx", ".xls"}
+    supported_extensions = {".json", ".csv", ".xlsx", ".xls", ".txt"}
 
     for root, dirs, filenames in os.walk(DATA_DIR):
         root_path = Path(root)
@@ -241,3 +253,140 @@ async def get_data_stats():
                 continue
 
     return stats
+
+
+@router.get("/keywords")
+async def list_keywords(platform: str = "xhs"):
+    """Get list of historical search keywords"""
+    if not DATA_DIR.exists():
+        return {"keywords": []}
+
+    platform_dir = DATA_DIR / platform / "json"
+    if not platform_dir.exists():
+        return {"keywords": []}
+
+    keywords = set()
+    # Check all subdirectories (json, txt, csv) for search results
+    for sub_dir in ["json", "txt", "csv"]:
+        dir_path = DATA_DIR / platform / sub_dir
+        if not dir_path.exists():
+            continue
+        for file_path in dir_path.glob("search_contents_*.*"):
+            name = file_path.stem
+            parts = name.split("_")
+            if len(parts) >= 4 and parts[0] == "search":
+                # Handle search_contents_date_time_keyword
+                # or search_contents_date_keyword
+                start_idx = 3
+                if len(parts) >= 5 and parts[3].isdigit() and len(parts[3]) == 4:
+                    start_idx = 4
+                
+                keyword = "_".join(parts[start_idx:])
+                if keyword:
+                    keywords.add(keyword)
+    
+    # Sort alphabetically
+    sorted_keywords = sorted(list(keywords))
+    return {"keywords": sorted_keywords}
+
+
+@router.get("/gallery")
+async def get_gallery_content(limit: int = 50, platform: str = "xhs", keyword: Optional[str] = None):
+    """Get high-quality recent records for gallery view"""
+    all_records = []
+    # Collect all search files from json and txt subfolders
+    data_files = []
+    for sub_dir in ["json", "txt"]:
+        dir_path = DATA_DIR / platform / sub_dir
+        if not dir_path.exists():
+            continue
+        # Only include files that match the search_contents_* pattern
+        files = list(dir_path.glob("search_contents_*.*"))
+        
+        if keyword:
+            # Filter by specific keyword in filename
+            for f in files:
+                name = f.stem
+                parts = name.split("_")
+                if len(parts) >= 4 and parts[0] == "search":
+                    start_idx = 3
+                    if len(parts) >= 5 and parts[3].isdigit() and len(parts[3]) == 4:
+                        start_idx = 4
+                    if "_".join(parts[start_idx:]) == keyword:
+                        data_files.append(f)
+        else:
+            data_files.extend(files)
+
+    if not data_files:
+        return {"data": []}
+
+    # Sort files by modification time
+    data_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+    # If no specific keyword provided, we find the keyword of the latest search file
+    # and restrict the gallery to only show results for that keyword
+    if not keyword:
+        latest_keyword = None
+        for f in data_files:
+            name = f.stem
+            parts = name.split("_")
+            if len(parts) >= 4 and parts[0] == "search":
+                start_idx = 3
+                if len(parts) >= 5 and parts[3].isdigit() and len(parts[3]) == 4:
+                    start_idx = 4
+                latest_keyword = "_".join(parts[start_idx:])
+                break
+        
+        if latest_keyword:
+            filtered_files = []
+            for f in data_files:
+                name = f.stem
+                parts = name.split("_")
+                if len(parts) >= 4 and parts[0] == "search":
+                    start_idx = 3
+                    if len(parts) >= 5 and parts[3].isdigit() and len(parts[3]) == 4:
+                        start_idx = 4
+                    if "_".join(parts[start_idx:]) == latest_keyword:
+                        filtered_files.append(f)
+            data_files = filtered_files
+
+    # Only look at the latest few files to be efficient
+    for file_path in data_files[:10]:
+        try:
+            if file_path.suffix == ".json":
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        all_records.extend(data)
+                    elif isinstance(data, dict):
+                        all_records.append(data)
+            elif file_path.suffix == ".txt":  # JSONL
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                all_records.append(json.loads(line))
+                            except:
+                                continue
+        except Exception:
+            continue
+        
+        if len(all_records) >= limit * 3:
+            break
+
+    # Sort records by liked count (heuristic for quality)
+    def get_likes(record):
+        likes = record.get("liked_count", "0")
+        if isinstance(likes, str):
+            if "万" in likes:
+                return int(float(likes.replace("万", "")) * 10000)
+            return int(likes) if likes.isdigit() else 0
+        return likes if isinstance(likes, int) else 0
+
+    # Filter out records without images
+    all_records = [r for r in all_records if r.get("image_list")]
+    
+    # Sort by likes descending
+    all_records.sort(key=get_likes, reverse=True)
+
+    return {"data": all_records[:limit]}

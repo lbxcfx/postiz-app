@@ -24,8 +24,9 @@ import pathlib
 from typing import Dict, List
 import aiofiles
 import config
-from tools.utils import utils
+from tools import utils
 from tools.words import AsyncWordCloudGenerator
+from var import source_keyword_var
 
 class AsyncFileWriter:
     def __init__(self, platform: str, crawler_type: str):
@@ -34,7 +35,8 @@ class AsyncFileWriter:
         self.crawler_type = crawler_type
         self.wordcloud_generator = AsyncWordCloudGenerator() if config.ENABLE_GET_WORDCLOUD else None
 
-    def _sanitize_job_id(self, job_id: str) -> str:
+    @staticmethod
+    def _sanitize_job_id(job_id: str) -> str:
         cleaned = "".join(
             ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in job_id
         )
@@ -43,7 +45,7 @@ class AsyncFileWriter:
         return cleaned
 
     def _job_prefix(self) -> str:
-        job_id = (config.CLIENT_JOB_ID or "").strip()
+        job_id = (getattr(config, "CLIENT_JOB_ID", "") or "").strip()
         if not job_id:
             return ""
         return f"job_{self._sanitize_job_id(job_id)}__"
@@ -51,9 +53,27 @@ class AsyncFileWriter:
     def _get_file_path(self, file_type: str, item_type: str) -> str:
         base_path = f"data/{self.platform}/{file_type}"
         pathlib.Path(base_path).mkdir(parents=True, exist_ok=True)
+        
+        # Include keywords in filename for search mode to prevent overwriting
+        keyword_suffix = ""
+        if self.crawler_type == "search":
+            # Try to get the specific keyword being crawled from source_keyword_var
+            current_kw = source_keyword_var.get()
+            if not current_kw and config.KEYWORDS:
+                # Fallback to config.KEYWORDS if var is empty
+                current_kw = config.KEYWORDS.replace(",", "_").replace(" ", "")
+            
+            if current_kw:
+                # Clean keyword for filename
+                clean_kw = current_kw.replace(" ", "").replace(",", "_")
+                if len(clean_kw) > 50:
+                    clean_kw = clean_kw[:50]
+                keyword_suffix = f"_{clean_kw}"
+
         job_prefix = self._job_prefix()
-        file_name = f"{job_prefix}{self.crawler_type}_{item_type}_{utils.get_current_date()}.{file_type}"
+        file_name = f"{job_prefix}{self.crawler_type}_{item_type}_{utils.get_current_date_with_time()}{keyword_suffix}.{file_type}"
         return f"{base_path}/{file_name}"
+
 
     async def write_to_csv(self, item: Dict, item_type: str):
         file_path = self._get_file_path('csv', item_type)
@@ -84,6 +104,13 @@ class AsyncFileWriter:
 
             async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
                 await f.write(json.dumps(existing_data, ensure_ascii=False, indent=4))
+
+    async def write_to_txt(self, item: Dict, item_type: str):
+        file_path = self._get_file_path('txt', item_type)
+        async with self.lock:
+            async with aiofiles.open(file_path, 'a', encoding='utf-8') as f:
+                line = json.dumps(item, ensure_ascii=False)
+                await f.write(line + "\n")
 
     async def generate_wordcloud_from_comments(self):
         """
@@ -130,8 +157,7 @@ class AsyncFileWriter:
             # Generate wordcloud
             words_base_path = f"data/{self.platform}/words"
             pathlib.Path(words_base_path).mkdir(parents=True, exist_ok=True)
-            job_prefix = self._job_prefix()
-            words_file_prefix = f"{words_base_path}/{job_prefix}{self.crawler_type}_comments_{utils.get_current_date()}"
+            words_file_prefix = f"{words_base_path}/{self.crawler_type}_comments_{utils.get_current_date()}"
 
             utils.logger.info(f"[AsyncFileWriter.generate_wordcloud_from_comments] Generating wordcloud from {len(filtered_data)} comments")
             await self.wordcloud_generator.generate_word_frequency_and_cloud(filtered_data, words_file_prefix)

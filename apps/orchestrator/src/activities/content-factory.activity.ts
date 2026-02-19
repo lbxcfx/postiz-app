@@ -329,6 +329,8 @@ export class ContentFactoryActivity {
         })
       : [];
     const postMedia = this.buildPostMedia(mediaAssets);
+    const isImmediatePublish =
+      !input.scheduleAt || new Date(input.scheduleAt).getTime() <= Date.now();
 
     const idempotencyKey = `${input.integrationId}:${draft.id}:${input.scheduleAt || 'now'}`;
     const publishJob = await this.prisma.publishJob.upsert({
@@ -348,6 +350,33 @@ export class ContentFactoryActivity {
         errorMessage: null,
       },
     });
+
+    if (isImmediatePublish && postMedia.length === 0) {
+      const message = 'FACTORY_MEDIA_REQUIRED: at least one image or video is required';
+      await this.prisma.publishJob.update({
+        where: { id: publishJob.id },
+        data: {
+          status: PublishStatus.FAILED,
+          errorCode: 'FACTORY_MEDIA_REQUIRED',
+          errorMessage: message,
+          retryCount: { increment: 1 },
+        },
+      });
+      await this.createAuditLog({
+        organizationId: input.organizationId,
+        operator: 'system',
+        action: 'publish_precheck_failed',
+        resourceType: 'publish_job',
+        resourceId: publishJob.id,
+        detail: {
+          reason: 'FACTORY_MEDIA_REQUIRED',
+          draftId: draft.id,
+          integrationId: integration.id,
+          scheduleAt: input.scheduleAt || null,
+        },
+      });
+      throw new Error(message);
+    }
 
     if (input.scheduleAt && new Date(input.scheduleAt).getTime() > Date.now()) {
       await this.prisma.publishJob.update({

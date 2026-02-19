@@ -232,6 +232,14 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Account Configuration",
             ),
         ] = config.COOKIES,
+        phone: Annotated[
+            str,
+            typer.Option(
+                "--phone",
+                help="Phone number used for phone login",
+                rich_help_panel="Account Configuration",
+            ),
+        ] = getattr(config, "LOGIN_PHONE", ""),
         specified_id: Annotated[
             str,
             typer.Option(
@@ -264,6 +272,22 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Basic Configuration",
             ),
         ] = config.CRAWLER_MAX_NOTES_COUNT,
+        xhs_min_liked_count: Annotated[
+            int,
+            typer.Option(
+                "--xhs_min_liked_count", 
+                help="[XHS] Minimum liked count for notes to be saved",
+                rich_help_panel="XHS Configuration"
+            )
+        ] = getattr(config, "XHS_MIN_LIKED_COUNT", 0),
+        xhs_min_save_count: Annotated[
+            int,
+            typer.Option(
+                "--xhs_min_save_count",
+                help="[XHS] Minimum number of notes to save per keyword",
+                rich_help_panel="XHS Configuration"
+            )
+        ] = getattr(config, "XHS_MIN_SAVE_COUNT_PER_KEYWORD", 0),
     ) -> SimpleNamespace:
         """MediaCrawler 命令行入口"""
 
@@ -288,8 +312,15 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.CDP_HEADLESS = enable_headless
         config.SAVE_DATA_OPTION = save_data_option.value
         config.COOKIES = cookies
+        config.LOGIN_PHONE = phone
         config.CLIENT_JOB_ID = client_job_id
         config.CRAWLER_MAX_NOTES_COUNT = crawl_count
+        
+        # Override XHS specific configs
+        if platform == PlatformEnum.XHS:
+            config.XHS_MIN_LIKED_COUNT = xhs_min_liked_count
+            config.XHS_MIN_SAVE_COUNT_PER_KEYWORD = xhs_min_save_count
+
 
         # Set platform-specific ID lists for detail/creator mode
         if specified_id_list:
@@ -328,6 +359,7 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
             save_data_option=config.SAVE_DATA_OPTION,
             init_db=init_db_value,
             cookies=config.COOKIES,
+            phone=config.LOGIN_PHONE,
             specified_id=specified_id,
             creator_id=creator_id,
             client_job_id=config.CLIENT_JOB_ID,

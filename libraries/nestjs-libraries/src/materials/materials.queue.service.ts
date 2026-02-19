@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Job, JobsOptions, Queue, QueueEvents, Worker } from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import {
+  MediaCrawlerLoginType,
   MediaCrawlerPlatform,
   MediaCrawlerService,
 } from '@gitroom/nestjs-libraries/materials/materials.crawler.service';
@@ -28,12 +29,15 @@ const DEFAULT_PAGE_SIZE = 20;
 export interface MaterialsJobData {
   orgId: string;
   platform: MediaCrawlerPlatform;
+  crawler_type?: 'search' | 'detail' | 'creator' | 'login';
   keywords: string;
   startPage: number;
   pageLimit?: number;
   queryHash?: string;
   startedAt?: string;
   consumedPaths?: string[];
+  loginType?: MediaCrawlerLoginType;
+  loginPhone?: string;
 }
 
 export interface MaterialsJobResult {
@@ -238,6 +242,8 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       message: 'Checking login status...',
     });
     const jobId = this.getJobId(job);
+    await this.ensureCrawlerIdle(jobId);
+
     this.emitEvent(jobId, {
       type: 'status',
       state: 'running',
@@ -245,9 +251,26 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       message: 'Checking login status...',
     });
 
-    // Check login status to determine headless mode
+    const isLoginJob = job.data.crawler_type === 'login';
+    const requestedLoginType = job.data.loginType === 'phone' ? 'phone' : 'qrcode';
+    if (isLoginJob && requestedLoginType === 'phone' && !job.data.loginPhone) {
+      throw new Error('Phone login requires login phone number');
+    }
+
+    // Check login status to determine headless mode.
+    // Default is still conservative headless in WSL/systemd, but phone login can
+    // be explicitly forced to headed because SMS/captcha often requires interaction.
     const loginStatus = await this.crawler.checkLoginStatus(job.data.platform);
     const useHeadless = loginStatus.has_valid_login;
+    const allowHeadedBrowser =
+      process.env.MATERIALS_ALLOW_HEADED_BROWSER === '1';
+    const forceHeadedPhoneLogin =
+      isLoginJob &&
+      requestedLoginType === 'phone' &&
+      process.env.MATERIALS_PHONE_LOGIN_HEADED === '1';
+    const runHeadless = forceHeadedPhoneLogin
+      ? false
+      : useHeadless || !allowHeadedBrowser;
 
     this.logger.log(
       `[handleJob] Platform: ${job.data.platform}, ` +
@@ -260,25 +283,77 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       type: 'status',
       state: 'running',
       progress: 0.1,
-      message: useHeadless
-        ? 'Valid login found, using headless mode'
-        : 'No valid login, browser window will open for QR code login',
+      message:
+        useHeadless
+          ? 'Valid login found, using headless mode'
+          : forceHeadedPhoneLogin
+            ? 'No valid login, forcing headed browser for phone verification'
+          : runHeadless
+            ? 'No valid login, using headless QR mode'
+            : 'No valid login, browser window will open for QR code login',
     });
+    const normalizedKeywords = (job.data.keywords || '').trim();
+    const loginBootstrapKeyword =
+      process.env.MATERIALS_LOGIN_BOOTSTRAP_KEYWORD || '小红书';
+    const keywords = isLoginJob
+      ? normalizedKeywords || loginBootstrapKeyword
+      : normalizedKeywords;
+    const enableComments = process.env.MATERIALS_ENABLE_COMMENTS === '1';
+    const enableSubComments =
+      enableComments && process.env.MATERIALS_ENABLE_SUB_COMMENTS === '1';
 
     await this.crawler.startCrawl({
       platform: job.data.platform,
       crawler_type: 'search',
-      keywords: job.data.keywords,
+      keywords,
       client_job_id: jobId || undefined,
-      login_type: 'qrcode',
+      login_type: requestedLoginType,
+      login_phone: requestedLoginType === 'phone' ? job.data.loginPhone : undefined,
       save_option: 'json',
       start_page: job.data.startPage,
-      crawl_count: this.getCrawlCount(job.data),
-      headless: useHeadless,  // Intelligent headless mode switching
+      crawl_count: isLoginJob ? 1 : this.getCrawlCount(job.data),
+      enable_comments: enableComments,
+      enable_sub_comments: enableSubComments,
+      headless: runHeadless, // Intelligent headless mode switching
     });
 
     const result = await this.monitorCrawler(job, startedAt);
     return result;
+  }
+
+  private async ensureCrawlerIdle(jobId: string) {
+    const status = await this.crawler.getStatus();
+    if (status.status !== 'running' && status.status !== 'stopping') {
+      return;
+    }
+
+    this.logger.warn(
+      `[ensureCrawlerIdle] Existing crawler status=${status.status}, stopping before job ${jobId}`
+    );
+    this.emitEvent(jobId, {
+      type: 'status',
+      state: 'running',
+      progress: 0.03,
+      message: 'Detected existing crawler task, stopping it first...',
+    });
+
+    await this.crawler.stopCrawl();
+    const timeoutMs = this.parseNumber(
+      process.env.MATERIALS_CRAWLER_STOP_TIMEOUT_MS,
+      30000
+    );
+    const pollMs = 500;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const current = await this.crawler.getStatus();
+      if (current.status === 'idle' || current.status === 'error') {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+
+    throw new Error('Timed out while stopping existing crawler process');
   }
 
   private async monitorCrawler(
@@ -297,31 +372,12 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       }
 
       const status = await this.crawler.getStatus();
+      const jobId = this.getJobId(job);
+      lastLogId = await this.emitLogs(jobId, lastLogId, job.data.platform);
+
       if (status.status === 'running') {
         sawRunning = true;
       }
-      const normalizedState = this.mapCrawlerState(status.status);
-      const progressValue =
-        normalizedState === 'running'
-          ? 0.5
-          : normalizedState === 'succeeded'
-            ? 1
-            : 0.9;
-      await job.updateProgress({
-        state: normalizedState,
-        progress: progressValue,
-        message: status.error_message || undefined,
-      });
-
-      const jobId = this.getJobId(job);
-      this.emitEvent(jobId, {
-        type: 'status',
-        state: normalizedState,
-        progress: progressValue,
-        message: status.error_message || undefined,
-      });
-
-      lastLogId = await this.emitLogs(jobId, lastLogId, job.data.platform);
 
       if (status.status === 'idle') {
         if (!sawRunning) {
@@ -330,11 +386,60 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
         }
         break;
       }
+
       if (status.status === 'error') {
         throw new Error(status.error_message || 'Crawler failed');
       }
 
+      const normalizedState = this.mapCrawlerState(status.status);
+      const progressValue = normalizedState === 'running' ? 0.5 : 0.9;
+      await job.updateProgress({
+        state: normalizedState,
+        progress: progressValue,
+        message: status.error_message || undefined,
+      });
+
+      this.emitEvent(jobId, {
+        type: 'status',
+        state: normalizedState,
+        progress: progressValue,
+        message: status.error_message || undefined,
+      });
+
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    const isLoginJob = job.data.crawler_type === 'login';
+    if (isLoginJob) {
+      const verifyTimeoutMs = this.parseNumber(
+        process.env.MATERIALS_LOGIN_VERIFY_TIMEOUT_MS,
+        15000
+      );
+      const verifyPollMs = this.parseNumber(
+        process.env.MATERIALS_LOGIN_VERIFY_POLL_INTERVAL_MS,
+        1000
+      );
+      const verifyStartedAt = Date.now();
+      let latestMessage = '';
+
+      while (Date.now() - verifyStartedAt < verifyTimeoutMs) {
+        const loginStatus = await this.crawler.checkLoginStatus(job.data.platform);
+        latestMessage = loginStatus.message || '';
+        if (loginStatus.has_valid_login) {
+          this.emitEvent(this.getJobId(job), {
+            type: 'login_success',
+            platform: job.data.platform,
+          });
+          return { count: 0, preview: null };
+        }
+        await new Promise((resolve) => setTimeout(resolve, verifyPollMs));
+      }
+
+      throw new Error(
+        latestMessage
+          ? `Login did not complete: ${latestMessage}`
+          : 'Login did not complete: still not logged in'
+      );
     }
 
     let consumedPaths = job.data.consumedPaths ?? [];
@@ -349,9 +454,9 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     const resolveStartedAt = Date.now();
     let resolved:
       | {
-          file: { path: string };
-          data: unknown;
-        }
+        file: { path: string };
+        data: unknown;
+      }
       | null = null;
     let sawNonContent = false;
 
@@ -453,8 +558,24 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
         });
         continue;
       }
+      if (this.isSmsRequiredMessage(log.message)) {
+        this.emitEvent(jobId, {
+          type: 'sms_required',
+          platform,
+          message: '请输入短信验证码',
+        });
+      }
       if (this.isLoginSuccessMessage(log.message)) {
         this.emitEvent(jobId, { type: 'login_success', platform });
+      }
+      if (this.isFatalCrawlerLog(log.message)) {
+        const fatalMessage = `Crawler startup failed: ${log.message}`;
+        this.emitEvent(jobId, {
+          type: 'error',
+          state: 'failed',
+          message: fatalMessage,
+        });
+        throw new Error(fatalMessage);
       }
       this.emitEvent(jobId, {
         type: 'log',
@@ -573,12 +694,14 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractQrCode(message: string) {
-    const marker = 'QRCODE_BASE64:';
-    const index = message.indexOf(marker);
-    if (index < 0) {
-      return null;
+    const markers = ['QRCODE_BASE64:', 'BROWSER_SCREENSHOT_BASE64:'];
+    for (const marker of markers) {
+      const index = message.indexOf(marker);
+      if (index >= 0) {
+        return message.slice(index + marker.length).trim();
+      }
     }
-    return message.slice(index + marker.length).trim();
+    return null;
   }
 
   private isLoginSuccessMessage(message: string) {
@@ -586,6 +709,19 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       /login .*successful/i.test(message) ||
       message.includes('登录成功') ||
       message.includes('Login successful')
+    );
+  }
+
+  private isSmsRequiredMessage(message: string) {
+    return message.includes('SMS_CODE_REQUIRED');
+  }
+
+  private isFatalCrawlerLog(message: string) {
+    return (
+      message.includes('Missing X server or $DISPLAY') ||
+      message.includes('TargetClosedError') ||
+      message.includes('Crawler exited with code: 1') ||
+      message.includes('phone_login_blocked:')
     );
   }
 

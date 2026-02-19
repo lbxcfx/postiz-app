@@ -1,0 +1,247 @@
+.factoryPage {
+  --primary: #ff2442;
+  --primary-hover: #e01b36;
+  --primary-light: #ffe6e8;
+  --bg-body: #f8fafc;
+  --bg-card: rgba(255, 255, 255, 0.82);
+  --text-main: #0f172a;
+  --text-secondary: #64748b;
+  --border-light: #e2e8f0;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --info: #3b82f6;
+  background:
+    radial-gradient(circle at 0 0, rgba(255, 36, 66, 0.06), transparent 30%),
+    radial-gradient(circle at 100% 100%, rgba(59, 130, 246, 0.08), transparent 25%),
+    var(--bg-body);
+  min-height: 100%;
+  padding: 20px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  backdrop-filter: blur(8px);
+}
+
+.title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.badge {
+  color: #fff;
+  background: var(--primary);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.card {
+  grid-column: span 12;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  border-radius: 18px;
+  padding: 16px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+}
+
+.card h3 {
+  color: var(--text-main);
+  margin-bottom: 8px;
+}
+
+.card p {
+  color: var(--text-secondary);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.field {
+  grid-column: span 12;
+}
+
+.fieldHalf {
+  grid-column: span 6;
+}
+
+.fieldThird {
+  grid-column: span 4;
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text-main);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.button {
+  border: 0;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--primary-hover);
+}
+
+.buttonGhost {
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text-main);
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tableWrap {
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--border-light);
+  text-align: left;
+  padding: 10px;
+  white-space: nowrap;
+}
+
+.pill {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.danger {
+  color: var(--danger);
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kpi {
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.kpiLabel {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.kpiValue {
+  font-size: 18px;
+  color: var(--text-main);
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.muted {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.logs {
+  background: #0b1220;
+  color: #cbd5e1;
+  border-radius: 14px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.logInfo {
+  color: #93c5fd;
+}
+
+.logWarn {
+  color: #fcd34d;
+}
+
+.logError {
+  color: #fca5a5;
+}
+
+@media (max-width: 960px) {
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fieldHalf,
+  .fieldThird {
+    grid-column: span 12;
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "startedAt": "2026-02-12T13:53:32.107Z",
+  "backendUrl": "http://127.0.0.1:3000",
+  "platform": "xhs",
+  "keywords": "内容工厂验收",
+  "pageLimit": 1,
+  "scheduleMinutes": 0,
+  "finishedAt": "2026-02-12T13:58:29.287Z",
+  "error": "Workflow ended before draft generation: FAILED"
+}

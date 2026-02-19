@@ -31,10 +31,16 @@ const DRAFT_TIMEOUT_MS = Number(argValue('draft-timeout-ms') || process.env.FACT
 const PUBLISH_TIMEOUT_MS = Number(argValue('publish-timeout-ms') || process.env.FACTORY_PUBLISH_TIMEOUT_MS || 300000);
 const SCHEDULE_MINUTES = Number(argValue('schedule-minutes') || process.env.FACTORY_SCHEDULE_MINUTES || 20);
 const CALL_RETRY_ATTEMPTS = Number(
-  argValue('call-retry-attempts') || process.env.FACTORY_CALL_RETRY_ATTEMPTS || 3
+  argValue('call-retry-attempts') || process.env.FACTORY_CALL_RETRY_ATTEMPTS || 6
 );
 const CALL_RETRY_BACKOFF_MS = Number(
-  argValue('call-retry-backoff-ms') || process.env.FACTORY_CALL_RETRY_BACKOFF_MS || 1500
+  argValue('call-retry-backoff-ms') || process.env.FACTORY_CALL_RETRY_BACKOFF_MS || 2000
+);
+const BACKEND_READY_TIMEOUT_MS = Number(
+  argValue('backend-ready-timeout-ms') || process.env.FACTORY_BACKEND_READY_TIMEOUT_MS || 120000
+);
+const BACKEND_READY_INTERVAL_MS = Number(
+  argValue('backend-ready-interval-ms') || process.env.FACTORY_BACKEND_READY_INTERVAL_MS || 3000
 );
 const RUN_LIVE = argHas('live') || process.env.FACTORY_LIVE_E2E === '1';
 const REPORT_DIR = argValue('report-dir') || process.env.FACTORY_E2E_REPORT_DIR || 'reports';
@@ -113,6 +119,26 @@ async function call(path, options = {}) {
   throw lastError || new Error(`Request failed: ${path}`);
 }
 
+async function waitForBackendReady() {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < BACKEND_READY_TIMEOUT_MS) {
+    try {
+      const response = await fetch(`${BACKEND_URL}/docs`, {
+        method: 'GET',
+      });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // keep retrying until timeout
+    }
+    await sleep(BACKEND_READY_INTERVAL_MS);
+  }
+  throw new Error(
+    `Backend not ready within ${BACKEND_READY_TIMEOUT_MS}ms: ${BACKEND_URL}/docs`
+  );
+}
+
 async function pickIntegrationId() {
   const integrationByArg = argValue('integration-id');
   if (integrationByArg) {
@@ -179,6 +205,8 @@ async function waitForPublishJob(draftId) {
 
 async function main() {
   console.log('[STEP] factory live e2e start');
+  console.log('[STEP] wait backend ready');
+  await waitForBackendReady();
   const integrationId = await pickIntegrationId();
   const idempotencyKey = `factory-e2e-${Date.now()}`;
   const scheduleAt = new Date(Date.now() + SCHEDULE_MINUTES * 60000).toISOString();

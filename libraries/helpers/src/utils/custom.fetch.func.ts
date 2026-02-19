@@ -7,6 +7,52 @@ export interface Params {
     response: Response
   ) => Promise<boolean>;
 }
+
+const isAbsoluteUrl = (value: string) => /^https?:\/\//i.test(value);
+
+const normalizeBaseUrl = (value?: string | null) => (value || '').trim();
+
+const resolveRequestUrl = (baseUrl: string, url: string) => {
+  const normalizedUrl = (url || '').trim();
+  if (!normalizedUrl) {
+    throw new Error('customFetch received an empty URL');
+  }
+
+  if (isAbsoluteUrl(normalizedUrl)) {
+    return normalizedUrl;
+  }
+
+  const normalizedPath = normalizedUrl.startsWith('/')
+    ? normalizedUrl
+    : `/${normalizedUrl}`;
+  const normalizedBase = normalizeBaseUrl(baseUrl);
+
+  if (normalizedBase) {
+    try {
+      return new URL(normalizedPath, normalizedBase).toString();
+    } catch {
+      // Fall through to env/window fallback.
+    }
+  }
+
+  const fallbackBase =
+    normalizeBaseUrl(process.env.NEXT_PUBLIC_BACKEND_URL) ||
+    normalizeBaseUrl(process.env.BACKEND_INTERNAL_URL) ||
+    normalizeBaseUrl(process.env.BACKEND_URL);
+
+  if (fallbackBase) {
+    return new URL(normalizedPath, fallbackBase).toString();
+  }
+
+  if (typeof window !== 'undefined') {
+    return new URL(normalizedPath, window.location.origin).toString();
+  }
+
+  throw new Error(
+    'customFetch cannot resolve base URL. Set NEXT_PUBLIC_BACKEND_URL/BACKEND_INTERNAL_URL.'
+  );
+};
+
 export const customFetch = (
   params: Params,
   auth?: string,
@@ -43,7 +89,7 @@ export const customFetch = (
             .find((p) => p.includes('impersonate='))
             ?.split('=')[1];
 
-    const fetchRequest = await fetch(params.baseUrl + url, {
+    const fetchRequest = await fetch(resolveRequestUrl(params.baseUrl, url), {
       ...(secured ? { credentials: 'include' } : {}),
       ...(newRequestObject || options),
       headers: {
@@ -87,6 +133,11 @@ export const customFetch = (
 
 export const fetchBackend = customFetch({
   get baseUrl() {
-    return process.env.BACKEND_URL!;
+    return (
+      process.env.BACKEND_URL ||
+      process.env.BACKEND_INTERNAL_URL ||
+      process.env.NEXT_PUBLIC_BACKEND_URL ||
+      ''
+    );
   },
 });

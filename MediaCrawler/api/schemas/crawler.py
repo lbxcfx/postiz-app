@@ -54,6 +54,7 @@ class SaveDataOptionEnum(str, Enum):
     SQLITE = "sqlite"
     MONGODB = "mongodb"
     EXCEL = "excel"
+    TXT = "txt"
 
 
 class CrawlerStartRequest(BaseModel):
@@ -70,8 +71,18 @@ class CrawlerStartRequest(BaseModel):
     enable_sub_comments: bool = False
     save_option: SaveDataOptionEnum = SaveDataOptionEnum.JSON
     cookies: str = ""
+    login_phone: str = ""
     headless: bool = False
+    xhs_config: Optional[dict] = None
+
     crawl_count: int = 20
+    xhs_min_liked_count: int = 0
+    xhs_min_save_count: int = 0
+
+
+    class Config:
+        extra = "allow"
+
 
 
 class CrawlerStatusResponse(BaseModel):
@@ -100,4 +111,21 @@ class DataFileInfo(BaseModel):
     size: int
     modified_at: str
     record_count: Optional[int] = None
+    client_job_id: Optional[str] = None
+
+
+class LoginStatusResponse(BaseModel):
+    """Login status response"""
+    has_valid_login: bool
+    platform: str
+    recommendation: Literal["headless", "headed"]
+    message: str
+    cookies_found: Optional[list] = None
+
+
+class SmsCodeRequest(BaseModel):
+    """SMS verification code submit request"""
+    platform: PlatformEnum
+    login_phone: str
+    sms_code: str
     client_job_id: Optional[str] = None

@@ -1,0 +1,17 @@
+[Unit]
+Description=Postiz Frontend Dev (System)
+After=network.target
+
+[Service]
+Type=simple
+User=lbx
+WorkingDirectory=/home/lbx/postiz-app
+Environment=PATH=/home/lbx/.nvm/versions/node/v22.22.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=NODE_OPTIONS=--max-old-space-size=3072
+ExecStart=/home/lbx/.nvm/versions/node/v22.22.0/bin/pnpm --filter ./apps/frontend run dev
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

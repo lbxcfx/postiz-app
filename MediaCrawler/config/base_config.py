@@ -22,6 +22,8 @@ PLATFORM = "xhs"  # 平台，xhs | dy | ks | bili | wb | tieba | zhihu
 KEYWORDS = "编程副业,编程兼职"  # 关键词搜索配置，以英文逗号分隔
 LOGIN_TYPE = "qrcode"  # qrcode or phone or cookie
 COOKIES = ""
+LOGIN_PHONE = ""
+SMS_CODE_DIR = "./runtime/sms_codes"
 CLIENT_JOB_ID = ""
 CRAWLER_TYPE = (
     "search"  # 爬取类型，search(关键词搜索) | detail(帖子详情)| creator(创作者主页数据)
@@ -48,7 +50,7 @@ SAVE_LOGIN_STATE = True
 # 是否启用CDP模式 - 使用用户现有的Chrome/Edge浏览器进行爬取，提供更好的反检测能力
 # 启用后将自动检测并启动用户的Chrome/Edge浏览器，通过CDP协议进行控制
 # 这种方式使用真实的浏览器环境，包括用户的扩展、Cookie和设置，大大降低被检测的风险
-ENABLE_CDP_MODE = True
+ENABLE_CDP_MODE = False
 
 # CDP调试端口，用于与浏览器通信
 # 如果端口被占用，系统会自动尝试下一个可用端口
@@ -58,7 +60,7 @@ CDP_DEBUG_PORT = 9222
 # 如果为空，系统会自动检测Chrome/Edge的安装路径
 # Windows示例: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 # macOS示例: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CUSTOM_BROWSER_PATH = ""
+CUSTOM_BROWSER_PATH = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 
 # CDP模式下是否启用无头模式
 # 注意：即使设置为True，某些反检测功能在无头模式下可能效果不佳
@@ -125,3 +127,5 @@ from .ks_config import *
 from .weibo_config import *
 from .tieba_config import *
 from .zhihu_config import *
+
+XHS_MIN_SAVE_COUNT_PER_KEYWORD = 2

@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
 export type MediaCrawlerPlatform = 'xhs' | 'dy';
-export type MediaCrawlerLoginType = 'qrcode' | 'cookie';
-export type MediaCrawlerCrawlerType = 'search' | 'detail' | 'login';
+export type MediaCrawlerLoginType = 'qrcode' | 'phone' | 'cookie';
+export type MediaCrawlerCrawlerType = 'search' | 'detail' | 'creator';
 
 export interface MediaCrawlerStartPayload {
   platform: MediaCrawlerPlatform;
@@ -13,7 +13,10 @@ export interface MediaCrawlerStartPayload {
   save_option?: 'json';
   start_page?: number;
   crawl_count?: number;
-  headless?: boolean;  // Auto-determined based on login state
+  enable_comments?: boolean;
+  enable_sub_comments?: boolean;
+  headless?: boolean; // Auto-determined based on login state
+  login_phone?: string;
 }
 
 export interface MediaCrawlerStartResponse {
@@ -54,11 +57,20 @@ interface MediaCrawlerLogsResponse {
   logs: MediaCrawlerLogEntry[];
 }
 
+interface MediaCrawlerSmsCodePayload {
+  platform: MediaCrawlerPlatform;
+  login_phone: string;
+  sms_code: string;
+  client_job_id?: string;
+}
+
 @Injectable()
 export class MediaCrawlerService {
   private readonly baseUrl =
     process.env.MEDIACRAWLER_API_URL || 'http://127.0.0.1:8081';
   private readonly apiKey = process.env.MEDIACRAWLER_API_KEY || '';
+  private readonly allowStaleResultFallback =
+    process.env.MATERIALS_ALLOW_STALE_RESULT_FALLBACK === 'true';
 
   private buildHeaders() {
     const headers: Record<string, string> = {
@@ -89,6 +101,17 @@ export class MediaCrawlerService {
   async startCrawl(payload: MediaCrawlerStartPayload) {
     return this.fetchJson<MediaCrawlerStartResponse>(
       this.normalizeUrl('/api/crawler/start'),
+      {
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async submitSmsCode(payload: MediaCrawlerSmsCodePayload) {
+    return this.fetchJson<{ status: string; message?: string }>(
+      this.normalizeUrl('/api/crawler/sms-code'),
       {
         method: 'POST',
         headers: this.buildHeaders(),
@@ -179,7 +202,9 @@ export class MediaCrawlerService {
   ) {
     const available = files.filter((file) => !consumedPaths.has(file.path));
     const directMatches = available.filter(
-      (file) => file.client_job_id === jobId
+      (file) =>
+        file.client_job_id === jobId ||
+        this.pathContainsJobId(file.path, jobId)
     );
     const directMatch = this.pickPreferredFile(directMatches);
     if (directMatch) {
@@ -196,8 +221,9 @@ export class MediaCrawlerService {
 
     return (
       this.pickPreferredFile(candidates) ||
-      this.pickPreferredFile(available) ||
-      null
+      (this.allowStaleResultFallback
+        ? this.pickPreferredFile(available)
+        : null)
     );
   }
 
@@ -252,4 +278,62 @@ export class MediaCrawlerService {
     }
     return 0;
   }
+
+  private pathContainsJobId(path: string, jobId: string) {
+    if (!path || !jobId) {
+      return false;
+    }
+    const lowerPath = path.toLowerCase();
+    const lowerJobId = jobId.toLowerCase();
+    return (
+      lowerPath.includes(`job_${lowerJobId}__`) ||
+      lowerPath.includes(`/${lowerJobId}__`) ||
+      lowerPath.includes(`\\${lowerJobId}__`)
+    );
+  }
+
+  /**
+   * Batch fetch user profile information (fan counts, etc.)
+   * Used by viral scoring for secondary enrichment.
+   */
+  async getUserProfiles(
+    platform: MediaCrawlerPlatform,
+    userIds: string[]
+  ): Promise<UserProfileResponse> {
+    if (!userIds.length) {
+      return { platform, profiles: [], fetched: 0, failed: 0 };
+    }
+    try {
+      const url = this.normalizeUrl('/api/crawler/user-profiles');
+      return await this.fetchJson<UserProfileResponse>(url, {
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify({
+          platform,
+          user_ids: userIds.slice(0, 20), // Limit to avoid abuse
+        }),
+      });
+    } catch (error) {
+      // Return empty on failure - non-critical feature
+      return { platform, profiles: [], fetched: 0, failed: userIds.length };
+    }
+  }
+}
+
+export interface UserProfileInfo {
+  user_id: string;
+  nickname?: string;
+  fans?: number;
+  follows?: number;
+  interaction?: number;
+  avatar?: string;
+  desc?: string;
+  error?: string;
+}
+
+export interface UserProfileResponse {
+  platform: string;
+  profiles: UserProfileInfo[];
+  fetched: number;
+  failed: number;
 }

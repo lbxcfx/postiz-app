@@ -1,0 +1,8 @@
+
+> postiz-orchestrator@1.0.0 dev /mnt/f/postiz-app/apps/orchestrator
+> dotenv -e ../../.env -- nest start --watch --entryFile=./apps/orchestrator/src/main
+
+c[[90m1:47:26 AM[0m] Starting compilation in watch mode...
+
+To restart at any time, enter rs.
+

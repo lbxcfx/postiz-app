@@ -1,0 +1,18 @@
+⚠️ 重要提示 ⚠️
+
+请不要在 webui 目录下启动后端服务！
+
+正确的启动方法：
+
+1. 返回上一级目录（项目根目录）
+   cd ..
+
+2. 然后再启动后端
+   python -m uvicorn api.main:app --host 0.0.0.0 --port 8001 --reload
+
+3. 启动前端（另开一个终端，在 webui 目录）
+   cd webui
+   npm run dev
+
+或者直接使用一键启动脚本：
+   双击运行项目根目录下的 "一键启动WebUI.bat"

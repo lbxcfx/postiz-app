@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { Organization } from '@prisma/client';
 import {
+  MediaCrawlerLoginType,
   MediaCrawlerPlatform,
   MediaCrawlerService,
 } from '@gitroom/nestjs-libraries/materials/materials.crawler.service';
@@ -35,6 +36,7 @@ interface MaterialsSearchRequest {
   startPage?: number;
   pageLimit?: number;
   forceCrawl?: boolean;
+  incremental?: boolean;
 }
 
 @ApiTags('Materials')
@@ -68,8 +70,28 @@ export class MaterialsController {
       pageLimit: body.pageLimit,
     };
     const queryHash = this.materials.buildQueryHash(query);
+    const incremental = Boolean(body.forceCrawl || body.incremental);
+    const historyResult = await this.materials.resolveKeywordResults({
+      platform: body.platform,
+      keywords: body.keywords,
+      includeHistory: true,
+    });
 
-    if (!body.forceCrawl) {
+    if (!incremental && historyResult?.count) {
+      return {
+        jobId: null as string | null,
+        state: 'succeeded',
+        cachedResults: this.transformLocalPaths(historyResult.data),
+        cachedAt: new Date().toISOString(),
+        resultPath: historyResult.resultPath,
+        count: historyResult.count,
+        preview: this.transformLocalPaths(historyResult.preview),
+        cacheHit: true,
+        incremental: false,
+      };
+    }
+
+    if (!incremental) {
       const cached = await this.materials.getCachedResult(query);
       if (cached?.resultPath) {
         if (!this.materials.isPreferredResultPath(cached.resultPath)) {
@@ -85,7 +107,7 @@ export class MaterialsController {
               await this.materials.clearCachedResult(queryHash);
             } else {
               return {
-                jobId: null,
+                jobId: null as string | null,
                 state: 'succeeded',
                 cachedResults: this.transformLocalPaths(cachedResults),
                 cachedAt: cached.cachedAt,
@@ -93,6 +115,7 @@ export class MaterialsController {
                 count: cached.count,
                 preview: this.transformLocalPaths(cached.preview),
                 cacheHit: true,
+                incremental: false,
               };
             }
           } catch (error) {
@@ -115,9 +138,17 @@ export class MaterialsController {
     return {
       jobId,
       state: 'queued',
-      cachedResults: [],
-      cachedAt: null,
+      cachedResults: [] as unknown[],
+      cachedAt: null as string | null,
       cacheHit: false,
+      historyResults: historyResult
+        ? this.transformLocalPaths(historyResult.data)
+        : null,
+      historyCount: historyResult?.count ?? 0,
+      historyPreview: historyResult
+        ? this.transformLocalPaths(historyResult.preview)
+        : null,
+      incremental,
     };
   }
 
@@ -143,13 +174,34 @@ export class MaterialsController {
     if (!status) {
       throw new NotFoundException('Job not found');
     }
+    const jobData = await this.queue.getJobData(jobId);
+    if (jobData && jobData.crawler_type !== 'login') {
+      const resolved = await this.materials.resolveKeywordResults({
+        platform: jobData.platform,
+        keywords: jobData.keywords,
+        startedAt: jobData.startedAt ? new Date(jobData.startedAt) : undefined,
+        includeHistory: true,
+      });
+      if (resolved) {
+        return {
+          jobId,
+          state: status.state,
+          resultPath: resolved.resultPath,
+          count: resolved.count,
+          preview: this.transformLocalPaths(resolved.preview),
+          data: this.transformLocalPaths(resolved.data),
+          partial: status.state !== 'succeeded',
+        };
+      }
+    }
+
     if (status.state !== 'succeeded') {
-      return { jobId, state: status.state };
+      return { jobId, state: status.state, data: null as unknown | null };
     }
 
     const result = await this.queue.getJobResult(jobId);
     if (!result?.resultPath) {
-      return { jobId, state: status.state, data: null };
+      return { jobId, state: status.state, data: null as unknown | null };
     }
 
     const data = await this.crawler.readFile(
@@ -187,7 +239,7 @@ export class MaterialsController {
   private transformLocalPaths(data: any) {
     if (!data) return data;
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-    const baseUrl = `${backendUrl}/api/materials/file/`;
+    const baseUrl = `${backendUrl}/materials/file/`;
 
     const traverse = (obj: any) => {
       if (!obj) return;
@@ -208,6 +260,159 @@ export class MaterialsController {
     const copy = JSON.parse(JSON.stringify(data));
     traverse(copy);
     return copy;
+  }
+
+  @Get('/login-status')
+  async loginStatus(
+    @Query('platform') platform: string = 'xhs'
+  ) {
+    const validPlatforms: MediaCrawlerPlatform[] = ['xhs', 'dy'];
+    const p = validPlatforms.includes(platform as MediaCrawlerPlatform)
+      ? (platform as MediaCrawlerPlatform)
+      : 'xhs';
+    return this.crawler.checkLoginStatus(p);
+  }
+
+  @Post('/enrich-profiles')
+  async enrichProfiles(
+    @Body() body: { platform?: string; user_ids: string[] }
+  ) {
+    const platform = (body.platform || 'xhs') as MediaCrawlerPlatform;
+    if (!body.user_ids?.length) {
+      return { platform, profiles: [], fetched: 0, failed: 0 };
+    }
+    return this.crawler.getUserProfiles(platform, body.user_ids);
+  }
+
+  @Post('/trigger-login')
+  async triggerLogin(
+    @GetOrgFromRequest() org: Organization,
+    @Body() body: {
+      platform?: string;
+      loginType?: MediaCrawlerLoginType;
+      loginPhone?: string;
+    }
+  ) {
+    let payload: {
+      platform?: string;
+      loginType?: MediaCrawlerLoginType;
+      loginPhone?: string;
+    } = body || {};
+    if (typeof (body as unknown) === 'string') {
+      try {
+        payload = JSON.parse(body as unknown as string);
+      } catch {
+        payload = {};
+      }
+    }
+
+    const platform = (payload.platform || 'xhs') as MediaCrawlerPlatform;
+    const inferredPhone = this.normalizeLoginPhone(payload.loginPhone);
+    const loginType: MediaCrawlerLoginType =
+      payload.loginType === 'phone' || (!!inferredPhone && !payload.loginType)
+        ? 'phone'
+        : 'qrcode';
+    const loginPhone = inferredPhone;
+    if (loginType === 'phone' && !loginPhone) {
+      throw new BadRequestException('loginPhone is required for phone login');
+    }
+    const jobId = `login_${uuidv4()}`;
+
+    // Start a specialized login job
+    await this.queue.enqueueJob(jobId, {
+      orgId: org.id,
+      platform,
+      crawler_type: 'login', // Important: trigger login sequence
+      keywords: '',
+      startPage: 1,
+      pageLimit: 1,
+      queryHash: `login_${platform}_${Date.now()}`,
+      loginType,
+      loginPhone: loginType === 'phone' ? loginPhone : undefined,
+    });
+
+    return { jobId, state: 'queued', loginType };
+  }
+
+  @Post('/submit-sms-code')
+  async submitSmsCode(
+    @Body()
+    body: {
+      platform?: string;
+      loginPhone?: string;
+      smsCode?: string;
+      jobId?: string;
+    }
+  ) {
+    let payload: {
+      platform?: string;
+      loginPhone?: string;
+      smsCode?: string;
+      jobId?: string;
+    } = body || {};
+    if (typeof (body as unknown) === 'string') {
+      try {
+        payload = JSON.parse(body as unknown as string);
+      } catch {
+        payload = {};
+      }
+    }
+
+    const platform = (payload.platform || 'xhs') as MediaCrawlerPlatform;
+    const loginPhone = this.normalizeLoginPhone(payload.loginPhone);
+    const smsCode = String(payload.smsCode || '').trim();
+    if (!loginPhone) {
+      throw new BadRequestException('loginPhone is required');
+    }
+    if (!smsCode) {
+      throw new BadRequestException('smsCode is required');
+    }
+    if (payload.jobId) {
+      const jobData = await this.queue.getJobData(payload.jobId);
+      if (!jobData) {
+        throw new BadRequestException('login job not found');
+      }
+      if (jobData.crawler_type === 'login' && jobData.loginType !== 'phone') {
+        throw new BadRequestException('当前登录任务不是手机号模式，请先点击获取验证码');
+      }
+    }
+
+    return this.crawler.submitSmsCode({
+      platform,
+      login_phone: loginPhone,
+      sms_code: smsCode,
+      client_job_id: payload.jobId,
+    });
+  }
+
+  @Get('/login-qrcode')
+  async loginQrcode(@Query('jobId') jobId: string) {
+    if (!jobId) {
+      throw new BadRequestException('jobId is required');
+    }
+
+    const logs = await this.crawler.getLogs(400);
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const log = logs[i];
+      if (log.client_job_id && log.client_job_id !== jobId) {
+        continue;
+      }
+      const qr = this.extractQrBase64FromMessage(log.message);
+      if (qr) {
+        return {
+          jobId,
+          found: true,
+          base64_image: qr,
+          timestamp: log.timestamp,
+        };
+      }
+    }
+
+    return {
+      jobId,
+      found: false,
+      base64_image: null as string | null,
+    };
   }
 
   @Sse('/events')
@@ -231,6 +436,44 @@ export class MaterialsController {
       return false;
     }
     return 'comment_id' in sample;
+  }
+
+  private extractQrBase64FromMessage(message: string) {
+    const markers = ['QRCODE_BASE64:', 'BROWSER_SCREENSHOT_BASE64:'];
+    for (const marker of markers) {
+      const index = message.indexOf(marker);
+      if (index < 0) {
+        continue;
+      }
+      const raw = message.slice(index + marker.length).trim();
+      if (!raw) {
+        continue;
+      }
+      if (raw.startsWith('data:image')) {
+        const parts = raw.split(',', 2);
+        return parts[1] || raw;
+      }
+      return raw;
+    }
+    return null;
+  }
+
+  private normalizeLoginPhone(phone?: string) {
+    const raw = String(phone || '').trim();
+    if (!raw) {
+      return '';
+    }
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) {
+      return raw;
+    }
+    if (digits.length === 13 && digits.startsWith('86')) {
+      return digits.slice(2);
+    }
+    if (digits.length > 11) {
+      return digits.slice(-11);
+    }
+    return digits;
   }
 
   /**

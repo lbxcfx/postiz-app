@@ -4,7 +4,9 @@ initializeSentry('backend', true);
 import { loadSwagger } from '@gitroom/helpers/swagger/load.swagger';
 import { json } from 'express';
 import { Runtime } from '@temporalio/worker';
-Runtime.install({ shutdownSignals: [] });
+if (process.env.ENABLE_TEMPORAL_RUNTIME_INSTALL === '1') {
+  Runtime.install({ shutdownSignals: [] });
+}
 
 process.env.TZ = 'UTC';
 
@@ -43,7 +45,15 @@ async function start() {
     },
   });
 
-  await startMcp(app);
+  if (process.env.DISABLE_MCP !== '1') {
+    void startMcp(app).catch((error) => {
+      Logger.warn(
+        `MCP bootstrap failed and will be skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

@@ -31,6 +31,109 @@ export const useAddProvider = (update?: () => void) => {
     });
   }, []);
 };
+
+export const useConnectProvider = () => {
+  const fetch = useFetch();
+  const modal = useModals();
+  const router = useRouter();
+  const toaster = useToaster();
+  const t = useT();
+
+  return useCallback(
+    async (
+      identifier: string,
+      isExternal: boolean,
+      isWeb3: boolean,
+      customFields?: Array<{
+        key: string;
+        label: string;
+        validation: string;
+        defaultValue?: string;
+        type: 'text' | 'password';
+      }>
+    ) => {
+      const openWeb3 = async () => {
+        const { component: Web3Providers } = web3List.find(
+          (item) => item.identifier === identifier
+        )!;
+        const { url } = await (
+          await fetch(`/integrations/social/${identifier}`)
+        ).json();
+        modal.openModal({
+          title: t('web3_provider', 'Web3 provider'),
+          withCloseButton: false,
+          classNames: {
+            modal: 'bg-transparent text-textColor',
+          },
+          children: (
+            <Web3Providers
+              onComplete={(code, newState) => {
+                window.location.href = `/integrations/social/${identifier}?code=${code}&state=${newState}`;
+              }}
+              nonce={url}
+            />
+          ),
+        });
+        return;
+      };
+      const gotoIntegration = async (externalUrl?: string) => {
+        const { url, err } = await (
+          await fetch(
+            `/integrations/social/${identifier}${externalUrl ? `?externalUrl=${externalUrl}` : ``
+            }`
+          )
+        ).json();
+        if (err) {
+          toaster.show(
+            t(
+              'could_not_connect_to_platform',
+              'Could not connect to the platform'
+            ),
+            'warning'
+          );
+          return;
+        }
+        window.location.href = url;
+      };
+      if (isWeb3) {
+        openWeb3();
+        return;
+      }
+      if (isExternal) {
+        modal.closeAll();
+        modal.openModal({
+          title: 'URL',
+          withCloseButton: false,
+          classNames: {
+            modal: 'bg-transparent text-textColor',
+          },
+          children: <UrlModal gotoUrl={gotoIntegration} />,
+        });
+        return;
+      }
+      if (customFields) {
+        modal.closeAll();
+        modal.openModal({
+          title: t('add_provider_title', 'Add Provider'),
+          withCloseButton: false,
+          classNames: {
+            modal: 'bg-transparent text-textColor',
+          },
+          children: (
+            <CustomVariables
+              identifier={identifier}
+              gotoUrl={(url: string) => router.push(url)}
+              variables={customFields}
+            />
+          ),
+        });
+        return;
+      }
+      await gotoIntegration();
+    },
+    []
+  );
+};
 export const AddProviderButton: FC<{
   update?: () => void;
 }> = (props) => {
@@ -38,10 +141,27 @@ export const AddProviderButton: FC<{
   const query = useSearchParams();
   const add = useAddProvider(update);
   const t = useT();
+  const fetch = useFetch();
+  const connect = useConnectProvider();
 
   useEffect(() => {
     if (query.get('onboarding')) {
-      add();
+      (async () => {
+        const data = await (await fetch('/integrations')).json();
+        const xiaohongshu = (data?.social || []).find(
+          (p: any) => p.identifier === 'xiaohongshu'
+        );
+        if (xiaohongshu) {
+          connect(
+            xiaohongshu.identifier,
+            xiaohongshu.isExternal,
+            xiaohongshu.isWeb3,
+            xiaohongshu.customFields
+          );
+          return;
+        }
+        add();
+      })();
     }
   }, []);
 
@@ -250,8 +370,8 @@ export const CustomVariables: FC<{
         ...acc,
         ...(item.defaultValue
           ? {
-              [item.key]: item.defaultValue,
-            }
+            [item.key]: item.defaultValue,
+          }
           : {}),
       }),
       {}
@@ -317,99 +437,25 @@ export const AddProviderComponent: FC<{
 }> = (props) => {
   const { update, social, article } = props;
   const { isGeneral } = useVariables();
-  const toaster = useToaster();
-  const router = useRouter();
-  const fetch = useFetch();
   const modal = useModals();
+  const connect = useConnectProvider();
   const getSocialLink = useCallback(
     (
-        identifier: string,
-        isExternal: boolean,
-        isWeb3: boolean,
-        customFields?: Array<{
-          key: string;
-          label: string;
-          validation: string;
-          defaultValue?: string;
-          type: 'text' | 'password';
-        }>
-      ) =>
+      identifier: string,
+      isExternal: boolean,
+      isWeb3: boolean,
+      customFields?: Array<{
+        key: string;
+        label: string;
+        validation: string;
+        defaultValue?: string;
+        type: 'text' | 'password';
+      }>
+    ) =>
       async () => {
-        const openWeb3 = async () => {
-          const { component: Web3Providers } = web3List.find(
-            (item) => item.identifier === identifier
-          )!;
-          const { url } = await (
-            await fetch(`/integrations/social/${identifier}`)
-          ).json();
-          modal.openModal({
-            title: t('web3_provider', 'Web3 provider'),
-            withCloseButton: false,
-            classNames: {
-              modal: 'bg-transparent text-textColor',
-            },
-            children: (
-              <Web3Providers
-                onComplete={(code, newState) => {
-                  window.location.href = `/integrations/social/${identifier}?code=${code}&state=${newState}`;
-                }}
-                nonce={url}
-              />
-            ),
-          });
-          return;
-        };
-        const gotoIntegration = async (externalUrl?: string) => {
-          const { url, err } = await (
-            await fetch(
-              `/integrations/social/${identifier}${
-                externalUrl ? `?externalUrl=${externalUrl}` : ``
-              }`
-            )
-          ).json();
-          if (err) {
-            toaster.show(t('could_not_connect_to_platform', 'Could not connect to the platform'), 'warning');
-            return;
-          }
-          window.location.href = url;
-        };
-        if (isWeb3) {
-          openWeb3();
-          return;
-        }
-        if (isExternal) {
-          modal.closeAll();
-          modal.openModal({
-            title: 'URL',
-            withCloseButton: false,
-            classNames: {
-              modal: 'bg-transparent text-textColor',
-            },
-            children: <UrlModal gotoUrl={gotoIntegration} />,
-          });
-          return;
-        }
-        if (customFields) {
-          modal.closeAll();
-          modal.openModal({
-            title: t('add_provider_title', 'Add Provider'),
-            withCloseButton: false,
-            classNames: {
-              modal: 'bg-transparent text-textColor',
-            },
-            children: (
-              <CustomVariables
-                identifier={identifier}
-                gotoUrl={(url: string) => router.push(url)}
-                variables={customFields}
-              />
-            ),
-          });
-          return;
-        }
-        await gotoIntegration();
+        await connect(identifier, isExternal, isWeb3, customFields);
       },
-    []
+    [connect]
   );
 
   const showApiButton = useCallback(
@@ -445,9 +491,9 @@ export const AddProviderComponent: FC<{
               )}
               {...(!!item.toolTip
                 ? {
-                    'data-tooltip-id': 'tooltip',
-                    'data-tooltip-content': item.toolTip,
-                  }
+                  'data-tooltip-id': 'tooltip',
+                  'data-tooltip-content': item.toolTip,
+                }
                 : {})}
               className={
                 'w-full h-[100px] text-[14px] p-[10px] rounded-[8px] bg-newTableHeader text-textColor relative justify-center items-center flex flex-col gap-[10px] cursor-pointer'

@@ -19,5 +19,17 @@
 from .crawler import router as crawler_router
 from .data import router as data_router
 from .websocket import router as websocket_router
+from .v1_jobs import router as v1_jobs_router
+from .health import router as health_router
+from .config import router as config_router
+from .user_profile import router as user_profile_router
 
-__all__ = ["crawler_router", "data_router", "websocket_router"]
+__all__ = [
+    "crawler_router", 
+    "data_router", 
+    "websocket_router",
+    "v1_jobs_router",
+    "health_router",
+    "config_router",
+    "user_profile_router"
+]

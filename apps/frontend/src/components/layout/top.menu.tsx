@@ -59,6 +59,62 @@ export const useMenuItem = () => {
       path: '/materials',
     },
     {
+      name: t('factory_dashboard', 'Dashboard'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M4 13H10V20H4V13ZM14 4H20V20H14V4ZM4 4H10V10H4V4Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        </svg>
+      ),
+      path: '/dashboard',
+    },
+    {
+      name: t('factory_tasks', 'Tasks'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M8 7H20M8 12H20M8 17H20M4 7H4.01M4 12H4.01M4 17H4.01" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      ),
+      path: '/tasks',
+    },
+    {
+      name: t('factory_content', 'Content'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M6 4H18C19.1046 4 20 4.89543 20 6V18C20 19.1046 19.1046 20 18 20H6C4.89543 20 4 19.1046 4 18V6C4 4.89543 4.89543 4 6 4Z" stroke="currentColor" strokeWidth="1.6" />
+          <path d="M8 9H16M8 13H16M8 17H12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      ),
+      path: '/content',
+    },
+    {
+      name: t('factory_generate', 'Generate'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M12 3L14.8 9.2L21 12L14.8 14.8L12 21L9.2 14.8L3 12L9.2 9.2L12 3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        </svg>
+      ),
+      path: '/generate',
+    },
+    {
+      name: t('factory_publish', 'Publish'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M4 12L20 4L14 20L11 13L4 12Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        </svg>
+      ),
+      path: '/publish',
+    },
+    {
+      name: t('factory_logs', 'Logs'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M4 5H20V19H4V5Z" stroke="currentColor" strokeWidth="1.6" />
+          <path d="M8 9H16M8 13H16M8 17H13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      ),
+      path: '/logs',
+    },
+    {
       name: isGeneral ? t('calendar', 'Calendar') : t('launches', 'Launches'),
       icon: (
         <svg

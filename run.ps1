@@ -1,3 +1,6 @@
+# Ensure Prisma tables exist before starting services
+pnpm run prisma-db-push
+
 # Start Backend (New Window)
 Start-Process -FilePath "pnpm" -ArgumentList "--filter ./apps/backend run dev"
 

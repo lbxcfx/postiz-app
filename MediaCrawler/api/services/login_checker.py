@@ -33,12 +33,25 @@ class LoginChecker:
     def __init__(self):
         self._project_root = Path(__file__).parent.parent.parent
         self._browser_data_dir = self._project_root / "browser_data"
+        # If cookies are too old, treat login as invalid to avoid stale-session false positives.
+        self._max_cookie_age_hours = int(os.getenv("LOGIN_STATE_MAX_AGE_HOURS", "24"))
 
     def get_user_data_dir(self, platform: str, use_cdp: bool = True) -> Path:
         """Get browser user data directory for platform"""
         prefix = "cdp_" if use_cdp else ""
         dir_name = f"{prefix}{platform}_user_data_dir"
         return self._browser_data_dir / dir_name
+
+    def _get_cookie_db_candidates(self, user_data_dir: Path) -> list[Path]:
+        """
+        Chromium cookie DB path differs by channel/version:
+        - Default/Network/Cookies
+        - Default/Cookies
+        """
+        return [
+            user_data_dir / "Default" / "Network" / "Cookies",
+            user_data_dir / "Default" / "Cookies",
+        ]
 
     def check_login_state(self, platform: str) -> dict:
         """
@@ -70,28 +83,47 @@ class LoginChecker:
         # Try CDP mode first, then regular mode
         for use_cdp in [True, False]:
             user_data_dir = self.get_user_data_dir(platform, use_cdp)
-            cookies_db = user_data_dir / "Default" / "Network" / "Cookies"
-            
-            if not cookies_db.exists():
-                continue
-            
-            found_cookies = self._check_cookies_db(cookies_db, platform, required_cookies)
-            
-            if found_cookies:
-                last_modified = datetime.fromtimestamp(
-                    cookies_db.stat().st_mtime
-                ).isoformat()
-                
-                return {
-                    "has_valid_login": True,
-                    "platform": platform,
-                    "cookies_found": found_cookies,
-                    "last_modified": last_modified,
-                    "recommendation": "headless",
-                    "message": f"Valid login state found. Cookies: {', '.join(found_cookies)}",
-                    "user_data_dir": str(user_data_dir),
-                    "cdp_mode": use_cdp,
-                }
+            for cookies_db in self._get_cookie_db_candidates(user_data_dir):
+                if not cookies_db.exists():
+                    continue
+
+                found_cookies = self._check_cookies_db(cookies_db, platform, required_cookies)
+
+                # A platform is considered logged in only when all required auth cookies are present.
+                # Previously, any one cookie was enough and produced false positives.
+                has_all_required = all(cookie in found_cookies for cookie in required_cookies)
+                if has_all_required:
+                    last_modified = datetime.fromtimestamp(
+                        cookies_db.stat().st_mtime
+                    ).isoformat()
+                    cookie_age_hours = max(
+                        0.0,
+                        (datetime.now().timestamp() - cookies_db.stat().st_mtime) / 3600.0,
+                    )
+                    if cookie_age_hours > self._max_cookie_age_hours:
+                        return {
+                            "has_valid_login": False,
+                            "platform": platform,
+                            "cookies_found": found_cookies,
+                            "last_modified": last_modified,
+                            "recommendation": "headed",
+                            "message": (
+                                f"Login cookies are stale ({cookie_age_hours:.1f}h old). "
+                                "QR code login required."
+                            ),
+                        }
+
+                    return {
+                        "has_valid_login": True,
+                        "platform": platform,
+                        "cookies_found": found_cookies,
+                        "last_modified": last_modified,
+                        "recommendation": "headless",
+                        "message": f"Valid login state found. Cookies: {', '.join(found_cookies)}",
+                        "user_data_dir": str(user_data_dir),
+                        "cookies_db": str(cookies_db),
+                        "cdp_mode": use_cdp,
+                    }
 
         return {
             "has_valid_login": False,

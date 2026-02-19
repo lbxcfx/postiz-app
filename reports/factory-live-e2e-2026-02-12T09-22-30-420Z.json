@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "startedAt": "2026-02-12T09:20:29.835Z",
+  "backendUrl": "http://127.0.0.1:3000",
+  "platform": "xhs",
+  "keywords": "内容工厂验收",
+  "pageLimit": 1,
+  "scheduleMinutes": 20,
+  "finishedAt": "2026-02-12T09:22:30.420Z",
+  "error": "Timeout waiting for publish job of draft ec341d8e-09e2-4d84-a2bf-14fa45d5ef02"
+}
