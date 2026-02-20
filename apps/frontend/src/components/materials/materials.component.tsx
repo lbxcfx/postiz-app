@@ -397,15 +397,23 @@ export const MaterialsComponent = () => {
 
   const completeLoginSuccess = useCallback(
     async (platform = "xhs") => {
+      // Optimistically update UI immediately to avoid "success but still stuck in modal".
+      closeLoginDialog();
+      setSmsRequested(false);
+      setPhoneLoginJobId(null);
+      setSmsVerifying(false);
+      setLoginStarting(false);
+      setLoginStatus((prev) => ({
+        ...prev,
+        checking: true,
+        hasValidLogin: true,
+        message: "已登录",
+      }));
+      autoLoginPromptedRef.current = false;
       setStatusMessage("登录成功，正在保存并校验Cookie...");
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const hasLogin = await refreshLoginStatus(platform);
         if (hasLogin) {
-          closeLoginDialog();
-          setSmsRequested(false);
-          setPhoneLoginJobId(null);
-          setSmsVerifying(false);
-          setLoginStarting(false);
           setLoginStatus((prev) => ({
             ...prev,
             checking: false,
@@ -1058,6 +1066,19 @@ export const MaterialsComponent = () => {
                 setPhoneLoginJobId(null);
                 requestedLoginTypeRef.current = null;
                 stopLoginPolling();
+                break;
+              }
+              if (
+                isLoginFlow &&
+                (msg.includes("登录成功") ||
+                  msg.includes("Login successful") ||
+                  /login .*successful/i.test(msg))
+              ) {
+                requestedLoginTypeRef.current = null;
+                setLoginStarting(false);
+                setSmsVerifying(false);
+                stopLoginPolling();
+                await completeLoginSuccess(platform);
                 break;
               }
               if (

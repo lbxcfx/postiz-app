@@ -18,6 +18,7 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 import asyncio
+import math
 import os
 import random
 from asyncio import Task
@@ -138,8 +139,14 @@ class XiaoHongShuCrawler(AbstractCrawler):
         """
         utils.logger.info("[XiaoHongShuCrawler.search] Begin search Xiaohongshu keywords (增量爬取模式)")
         xhs_limit_count = 20  # Xiaohongshu limit page fixed value
-        if config.CRAWLER_MAX_NOTES_COUNT < xhs_limit_count:
-            config.CRAWLER_MAX_NOTES_COUNT = xhs_limit_count
+        max_notes_limit = getattr(config, "CRAWLER_MAX_NOTES_COUNT", xhs_limit_count)
+        try:
+            max_notes_limit = int(max_notes_limit)
+        except (TypeError, ValueError):
+            max_notes_limit = xhs_limit_count
+        if max_notes_limit <= 0:
+            max_notes_limit = xhs_limit_count
+        max_pages = max(1, math.ceil(max_notes_limit / xhs_limit_count))
         
         # 確定排序方式：優先使用配置的時間排序，用於獲取最新作品
         sort_type = SearchSortType.LATEST  # 默認使用最新排序
@@ -188,6 +195,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     utils.logger.info(f"[XiaoHongShuCrawler.search] 跳過頁面 {page}")
                     page += 1
                     continue
+                if page - start_page + 1 > max_pages:
+                    utils.logger.info(
+                        f"[XiaoHongShuCrawler.search] Reached page limit {max_pages} for keyword '{keyword}', stop paging"
+                    )
+                    break
                 try:
                     utils.logger.info(f"[XiaoHongShuCrawler.search] 搜索小紅書關鍵字: {keyword}, 頁面: {page}, 排序: {sort_type.value}")
                     note_ids: List[str] = []
@@ -255,6 +267,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
 
                     if min_save_target > 0 and saved_for_keyword >= min_save_target:
                         utils.logger.info(f"[XiaoHongShuCrawler.search] Keyword '{keyword}' reached target {saved_for_keyword}/{min_save_target}, stop paging")
+                        break
+                    if processed_for_keyword >= max_notes_limit:
+                        utils.logger.info(
+                            f"[XiaoHongShuCrawler.search] Keyword '{keyword}' reached max notes limit {max_notes_limit}, stop paging"
+                        )
                         break
 
                     if not has_more:

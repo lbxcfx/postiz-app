@@ -80,6 +80,8 @@ class LoginChecker:
 
         required_cookies = self.PLATFORM_LOGIN_COOKIES[platform]
         
+        stale_match = None
+
         # Try CDP mode first, then regular mode
         for use_cdp in [True, False]:
             user_data_dir = self.get_user_data_dir(platform, use_cdp)
@@ -101,7 +103,9 @@ class LoginChecker:
                         (datetime.now().timestamp() - cookies_db.stat().st_mtime) / 3600.0,
                     )
                     if cookie_age_hours > self._max_cookie_age_hours:
-                        return {
+                        # Keep scanning other cookie stores; a stale CDP profile
+                        # should not mask a fresh non-CDP login.
+                        stale_payload = {
                             "has_valid_login": False,
                             "platform": platform,
                             "cookies_found": found_cookies,
@@ -112,6 +116,15 @@ class LoginChecker:
                                 "QR code login required."
                             ),
                         }
+                        if (
+                            stale_match is None
+                            or cookie_age_hours < stale_match["cookie_age_hours"]
+                        ):
+                            stale_match = {
+                                "cookie_age_hours": cookie_age_hours,
+                                "payload": stale_payload,
+                            }
+                        continue
 
                     return {
                         "has_valid_login": True,
@@ -124,6 +137,9 @@ class LoginChecker:
                         "cookies_db": str(cookies_db),
                         "cdp_mode": use_cdp,
                     }
+
+        if stale_match is not None:
+            return stale_match["payload"]
 
         return {
             "has_valid_login": False,

@@ -7,7 +7,7 @@ RUN_USER="${POSTIZ_RUN_USER:-lbx}"
 
 find_workdir() {
   local candidate
-  for candidate in "${POSTIZ_WORKDIR:-}" "/home/lbx/postiz-app" "/mnt/f/postiz-app"; do
+  for candidate in "${POSTIZ_WORKDIR:-}" "/mnt/f/postiz-app" "/home/lbx/postiz-app"; do
     if [[ -n "${candidate}" && -x "${candidate}/MediaCrawler/.venv/bin/python" ]]; then
       echo "${candidate}"
       return 0
@@ -40,6 +40,8 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=${WORKDIR}/MediaCrawler/.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8081 --reload
 Restart=always
 RestartSec=2
+TimeoutStopSec=20
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

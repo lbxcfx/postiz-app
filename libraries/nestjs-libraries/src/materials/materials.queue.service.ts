@@ -415,7 +415,15 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     const pollIntervalMs = this.getPollIntervalMs();
     let lastLogId = 0;
     let sawRunning = false;
+    let sawLoginSuccessLog = false;
+    let loginSuccessDetectedAtMs: number | null = null;
+    let stopRequestedAfterLoginSuccess = false;
     const startedAtMs = Date.now();
+    const isLoginJob = job.data.crawler_type === 'login';
+    const loginSuccessStopGraceMs = this.parseNumber(
+      process.env.MATERIALS_LOGIN_SUCCESS_STOP_GRACE_MS,
+      12000
+    );
 
     while (true) {
       const jobId = this.getJobId(job);
@@ -432,10 +440,38 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       }
 
       const status = await this.crawler.getStatus();
-      lastLogId = await this.emitLogs(jobId, lastLogId, job.data.platform);
+      const logState = await this.emitLogs(jobId, lastLogId, job.data.platform);
+      lastLogId = logState.lastLogId;
+      if (isLoginJob && logState.loginSuccess) {
+        sawLoginSuccessLog = true;
+        if (!loginSuccessDetectedAtMs) {
+          loginSuccessDetectedAtMs = Date.now();
+        }
+      }
 
       if (status.status === 'running') {
         sawRunning = true;
+      }
+
+      if (
+        isLoginJob &&
+        sawLoginSuccessLog &&
+        loginSuccessDetectedAtMs !== null &&
+        Date.now() - loginSuccessDetectedAtMs >= loginSuccessStopGraceMs &&
+        !stopRequestedAfterLoginSuccess
+      ) {
+        this.emitEvent(jobId, {
+          type: 'status',
+          state: 'running',
+          progress: 0.92,
+          message: '登录已完成，正在结束登录任务...',
+        });
+        try {
+          await this.crawler.stopCrawl();
+        } catch {
+          // Ignore stop errors here and continue polling status.
+        }
+        stopRequestedAfterLoginSuccess = true;
       }
 
       if (status.status === 'idle') {
@@ -468,11 +504,10 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
 
-    const isLoginJob = job.data.crawler_type === 'login';
     if (isLoginJob) {
       const verifyTimeoutMs = this.parseNumber(
         process.env.MATERIALS_LOGIN_VERIFY_TIMEOUT_MS,
-        15000
+        45000
       );
       const verifyPollMs = this.parseNumber(
         process.env.MATERIALS_LOGIN_VERIFY_POLL_INTERVAL_MS,
@@ -593,13 +628,14 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     platform: MediaCrawlerPlatform
   ) {
     if (!this.logsForwardingEnabled) {
-      return lastLogId;
+      return { lastLogId, loginSuccess: false };
     }
     if (!jobId) {
-      return lastLogId;
+      return { lastLogId, loginSuccess: false };
     }
     const logs = await this.crawler.getLogs();
     const newLogs = logs.filter((log) => log.id > lastLogId);
+    let sawLoginSuccess = false;
     for (const log of newLogs) {
       if (log.client_job_id && log.client_job_id !== jobId) {
         continue;
@@ -628,6 +664,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
         });
       }
       if (this.isLoginSuccessMessage(log.message)) {
+        sawLoginSuccess = true;
         this.emitEvent(jobId, { type: 'login_success', platform });
       }
       if (this.isFatalCrawlerLog(log.message)) {
@@ -647,9 +684,12 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       });
     }
     if (newLogs.length > 0) {
-      return newLogs[newLogs.length - 1].id;
+      return {
+        lastLogId: newLogs[newLogs.length - 1].id,
+        loginSuccess: sawLoginSuccess,
+      };
     }
-    return lastLogId;
+    return { lastLogId, loginSuccess: sawLoginSuccess };
   }
 
   private async cleanupZombieCrawler() {
