@@ -2,30 +2,8 @@
 "use client";
 
 import { useVariables } from "@gitroom/react/helpers/variable.context";
-import { ViralResult, getViralLevelLabel, getViralLevelColor } from "./viral-score";
-
-export interface MaterialItem {
-    id: string;
-    platform: string;
-    externalId: string;
-    title?: string;
-    desc?: string;
-    coverUrl?: string;
-    contentUrl?: string;
-    authorName?: string;
-    authorAvatar?: string;
-    authorUserId?: string;
-    createdAt: string;
-    /** 互动数据 */
-    likedCount?: number;
-    collectedCount?: number;
-    commentCount?: number;
-    shareCount?: number;
-    /** 作者粉丝数 (二次爬取获取) */
-    followerCount?: number;
-    /** 爆款评分结果 (前端计算后附加) */
-    viralResult?: ViralResult;
-}
+import { getViralLevelLabel, getViralLevelColor } from "./viral-score";
+import { MaterialItem } from "./materials.types";
 
 /**
  * Check if a URL needs to be proxied (e.g., Xiaohongshu CDN with anti-hotlinking)
@@ -73,7 +51,13 @@ const formatCount = (count?: number): string => {
     return String(count);
 };
 
-export const MaterialsResults = ({ items }: { items: MaterialItem[] }) => {
+export const MaterialsResults = ({
+    items,
+    onItemClick,
+}: {
+    items: MaterialItem[];
+    onItemClick?: (item: MaterialItem) => void;
+}) => {
     const { backendUrl } = useVariables();
 
     if (!items || items.length === 0) {
@@ -112,7 +96,15 @@ export const MaterialsResults = ({ items }: { items: MaterialItem[] }) => {
                     <div
                         key={item.id}
                         className="break-inside-avoid mb-3 group cursor-pointer"
-                        onClick={() => noteUrl && window.open(noteUrl, '_blank')}
+                        onClick={() => {
+                            if (onItemClick) {
+                                onItemClick(item);
+                                return;
+                            }
+                            if (noteUrl) {
+                                window.open(noteUrl, '_blank');
+                            }
+                        }}
                     >
                         <div
                             className={`bg-sixth rounded-xl overflow-hidden transition-all duration-200 hover:shadow-lg hover:shadow-black/20 hover:-translate-y-0.5 ${isViral ? 'ring-1 ring-red-500/30' : 'border border-fifth/50'

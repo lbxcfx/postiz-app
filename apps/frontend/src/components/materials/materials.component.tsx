@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { MaterialsSearch } from "./materials-search.component";
-import { MaterialsResults, MaterialItem } from "./materials-results.component";
+import { MaterialsResults } from "./materials-results.component";
 import { MaterialsViralSettings } from "./materials-viral-settings.component";
 import {
   ViralThresholds,
@@ -12,6 +12,12 @@ import {
 } from "./viral-score";
 import { useFetch } from "@gitroom/helpers/utils/custom.fetch";
 import { useVariables } from "@gitroom/react/helpers/variable.context";
+import { useRouter } from "next/navigation";
+import { MaterialItem } from "./materials.types";
+import {
+  getMaterialStorageKey,
+  persistMaterialDataset,
+} from "./materials-analysis.storage";
 
 // ────────────────── Helpers ──────────────────
 
@@ -217,6 +223,7 @@ interface LoginStatus {
 
 export const MaterialsComponent = () => {
   const fetch = useFetch();
+  const router = useRouter();
   const { backendUrl } = useVariables();
 
   // Search state
@@ -262,48 +269,57 @@ export const MaterialsComponent = () => {
 
   // ────────── Viral Filtering & Scoring ──────────
 
-  const processedResults = useMemo(() => {
-    const scored = rawResults.map((item) => {
-      const viralResult = calculateViralScore(
-        {
-          likes: item.likedCount || 0,
-          shares: item.shareCount || 0,
-          comments: item.commentCount || 0,
-          collects: item.collectedCount || 0,
-          followers: item.followerCount || 0,
-          publishedAt: item.createdAt,
-        },
-        viralThresholds
-      );
-      return { ...item, viralResult };
-    });
+  const scoredResults = useMemo(
+    () =>
+      rawResults.map((item) => {
+        const viralResult = calculateViralScore(
+          {
+            likes: item.likedCount || 0,
+            shares: item.shareCount || 0,
+            comments: item.commentCount || 0,
+            collects: item.collectedCount || 0,
+            followers: item.followerCount || 0,
+            publishedAt: item.createdAt,
+          },
+          viralThresholds
+        );
+        return { ...item, viralResult };
+      }),
+    [rawResults, viralThresholds]
+  );
 
-    if (onlyShowViral) {
-      return scored.filter((item) => item.viralResult?.isViral);
+  const processedResults = useMemo(() => {
+    if (!onlyShowViral) {
+      return scoredResults;
     }
-    return scored;
-  }, [rawResults, viralThresholds, onlyShowViral]);
+    return scoredResults.filter((item) => item.viralResult?.isViral);
+  }, [onlyShowViral, scoredResults]);
 
   // ────────── Stats ──────────
 
   const viralCount = useMemo(
-    () => rawResults.filter((item) => {
-      const r = calculateViralScore({
-        likes: item.likedCount || 0,
-        shares: item.shareCount || 0,
-        comments: item.commentCount || 0,
-        collects: item.collectedCount || 0,
-        followers: item.followerCount || 0,
-        publishedAt: item.createdAt,
-      }, viralThresholds);
-      return r.isViral;
-    }).length,
-    [rawResults, viralThresholds]
+    () => scoredResults.filter((item) => item.viralResult?.isViral).length,
+    [scoredResults]
   );
 
   const enrichedCount = useMemo(
     () => rawResults.filter(i => (i.followerCount || 0) > 0).length,
     [rawResults]
+  );
+
+  useEffect(() => {
+    if (!scoredResults.length) {
+      return;
+    }
+    persistMaterialDataset(scoredResults);
+  }, [scoredResults]);
+
+  const handleOpenAnalysis = useCallback(
+    (item: MaterialItem) => {
+      const storageKey = getMaterialStorageKey(item);
+      router.push(`/materials/analysis/${encodeURIComponent(storageKey)}`);
+    },
+    [router]
   );
 
   // ────────── Cleanup ──────────
@@ -1438,7 +1454,7 @@ export const MaterialsComponent = () => {
       )}
 
       {/* Results Grid */}
-      <MaterialsResults items={processedResults} />
+      <MaterialsResults items={processedResults} onItemClick={handleOpenAnalysis} />
     </div>
   );
 };
