@@ -164,6 +164,29 @@ export class MaterialsController {
     return status;
   }
 
+  @Post('/stop')
+  async stopJob(@Body() body: { jobId?: string }) {
+    const jobId = String(body?.jobId || '').trim();
+    if (!jobId) {
+      await this.crawler.stopCrawl();
+      return { stopped: true, state: 'stopping' };
+    }
+    const result = await this.queue.stopJob(jobId);
+    if (!result.stopped) {
+      throw new NotFoundException('Job not found');
+    }
+    try {
+      await this.crawler.stopCrawl();
+    } catch {
+      // Ignore crawler stop errors when queue-level stop has already been requested.
+    }
+    return {
+      jobId,
+      ...result,
+      message: 'Stop requested',
+    };
+  }
+
   @Get('/results')
   async results(@Query('jobId') jobId: string) {
     if (!jobId) {

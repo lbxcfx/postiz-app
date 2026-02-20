@@ -170,6 +170,40 @@ const mapToMaterialItems = (items: any[], platform: string): MaterialItem[] => {
   });
 };
 
+const getMaterialMergeKey = (item: MaterialItem) =>
+  `${item.platform || "unknown"}:${item.externalId || item.id}`;
+
+const mergeMaterialItems = (previous: MaterialItem[], incoming: MaterialItem[]) => {
+  if (!previous.length) {
+    return incoming;
+  }
+  if (!incoming.length) {
+    return previous;
+  }
+
+  const merged = [...previous];
+  const indexByKey = new Map<string, number>();
+  merged.forEach((item, index) => {
+    indexByKey.set(getMaterialMergeKey(item), index);
+  });
+
+  incoming.forEach((item) => {
+    const key = getMaterialMergeKey(item);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push(item);
+      return;
+    }
+    merged[existingIndex] = {
+      ...merged[existingIndex],
+      ...item,
+    };
+  });
+
+  return merged;
+};
+
 // ────────────────── Login Status Type ──────────────────
 
 interface LoginStatus {
@@ -243,9 +277,6 @@ export const MaterialsComponent = () => {
       );
       return { ...item, viralResult };
     });
-
-    // Sort by viral score descending
-    scored.sort((a, b) => (b.viralResult?.score || 0) - (a.viralResult?.score || 0));
 
     if (onlyShowViral) {
       return scored.filter((item) => item.viralResult?.isViral);
@@ -519,9 +550,9 @@ export const MaterialsComponent = () => {
       }
       if (withEnrichment) {
         const enrichedItems = await enrichWithFollowerData(mapped, platform);
-        setRawResults(enrichedItems);
+        setRawResults((previous) => mergeMaterialItems(previous, enrichedItems));
       } else {
-        setRawResults(mapped);
+        setRawResults((previous) => mergeMaterialItems(previous, mapped));
       }
       return resultsData;
     },
@@ -542,6 +573,7 @@ export const MaterialsComponent = () => {
           stopPolling();
           await refreshJobResults(currentJobId, currentPlatformRef.current, true);
           setLoading(false);
+          setJobId(null);
           closeLoginDialog();
           setLoginStatus((prev) => ({
             ...prev,
@@ -553,6 +585,7 @@ export const MaterialsComponent = () => {
           setStatusMessage(`搜索失败: ${status.error || "未知错误"}`);
           stopPolling();
           setLoading(false);
+          setJobId(null);
         } else if (status.state === "running" || status.state === "active") {
           setProgress(status.progress ? status.progress * 100 : 50);
           setStatusMessage(status.message || "正在搜索中...");
@@ -586,6 +619,7 @@ export const MaterialsComponent = () => {
 
     setLoading(true);
     setRawResults([]);
+    setJobId(null);
     setProgress(0);
     setStatusMessage("正在启动搜索...");
     setSmsRequested(false);
@@ -649,6 +683,7 @@ export const MaterialsComponent = () => {
         pollJobStatus(data.jobId);
         startSSE(data.jobId, params.platform);
       } else {
+        setJobId(null);
         if (params.incremental) {
           setLoading(false);
           setStatusMessage("未创建增量任务");
@@ -665,6 +700,27 @@ export const MaterialsComponent = () => {
       setStatusMessage("搜索启动失败");
     }
   };
+
+  const handleStopSearch = useCallback(async () => {
+    if (!jobId) {
+      return;
+    }
+    try {
+      await fetch("/materials/stop", {
+        method: "POST",
+        body: JSON.stringify({ jobId }),
+      });
+      setStatusMessage("已停止爬取");
+    } catch (error) {
+      setStatusMessage("停止请求失败，请重试");
+    } finally {
+      closeEventSource();
+      stopPolling();
+      setLoading(false);
+      setProgress(0);
+      setJobId(null);
+    }
+  }, [fetch, jobId, closeEventSource, stopPolling]);
 
   // ────────── Trigger Login Handler ──────────
 
@@ -950,6 +1006,9 @@ export const MaterialsComponent = () => {
               payload.state === "failed"
             ) {
               setLoading(false);
+              if (!isLoginFlow) {
+                setJobId(null);
+              }
               setLoginStarting(false);
               setSmsVerifying(false);
               stopLoginPolling();
@@ -1036,8 +1095,11 @@ export const MaterialsComponent = () => {
               await refreshJobResults(id, platform, false);
             } catch (err) {
               if (payload.preview) {
-                setRawResults(
-                  mapToMaterialItems(payload.preview, platform)
+                setRawResults((previous) =>
+                  mergeMaterialItems(
+                    previous,
+                    mapToMaterialItems(payload.preview, platform)
+                  )
                 );
               }
             }
@@ -1045,6 +1107,7 @@ export const MaterialsComponent = () => {
           case "error":
             setStatusMessage(`错误: ${payload.message}`);
             setLoading(false);
+            setJobId(null);
             setLoginStarting(false);
             setSmsVerifying(false);
             setSmsRequested(false);
@@ -1322,7 +1385,12 @@ export const MaterialsComponent = () => {
       )}
 
       {/* Search Bar */}
-      <MaterialsSearch onSearch={handleSearch} isLoading={loading} />
+      <MaterialsSearch
+        onSearch={handleSearch}
+        onStop={handleStopSearch}
+        canStop={loading && !!jobId}
+        isLoading={loading}
+      />
 
       {/* Viral Settings */}
       <MaterialsViralSettings

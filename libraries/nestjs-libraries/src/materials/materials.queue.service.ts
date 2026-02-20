@@ -1,6 +1,13 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
-import { Job, JobsOptions, Queue, QueueEvents, Worker } from 'bullmq';
+import {
+  Job,
+  JobsOptions,
+  Queue,
+  QueueEvents,
+  UnrecoverableError,
+  Worker,
+} from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import {
   MediaCrawlerLoginType,
@@ -65,6 +72,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
   private readonly queueName: string;
   private readonly dlqName: string;
   private readonly logsForwardingEnabled: boolean;
+  private readonly cancelKeyPrefix = 'materials:cancel:';
 
   constructor(
     private readonly crawler: MediaCrawlerService,
@@ -131,13 +139,24 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       const jobId = this.getJobId(job);
+      const isManualStop = (error?.message || '').includes('任务已手动停止');
+      await ioRedis.del(this.cancelKeyPrefix + jobId);
       const payload: MaterialsEventPayload = {
         type: 'error',
         state: 'failed',
-        message: error?.message || 'Crawler failed',
+        message: isManualStop ? '任务已手动停止' : error?.message || 'Crawler failed',
       };
       this.emitEvent(jobId, payload);
-      await this.dlq?.add('dead', { ...job.data }, jobOptions);
+      if (!isManualStop) {
+        await this.dlq?.add('dead', { ...job.data }, jobOptions);
+      }
+    });
+
+    this.worker.on('completed', async (job) => {
+      if (!job) {
+        return;
+      }
+      await ioRedis.del(this.cancelKeyPrefix + this.getJobId(job));
     });
 
     await this.cleanupZombieCrawler();
@@ -155,6 +174,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     if (!this.queue) {
       throw new Error('Materials queue is not initialized.');
     }
+    await ioRedis.del(this.cancelKeyPrefix + jobId);
     const job = await this.queue.add('crawl', data, { jobId });
     this.emitEvent(job.id ?? jobId, {
       type: 'status',
@@ -226,6 +246,37 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Materials queue is not initialized.');
     }
     return this.queue.getJob(jobId);
+  }
+
+  async stopJob(jobId: string) {
+    this.ensureEnabled();
+    if (!this.queue) {
+      throw new Error('Materials queue is not initialized.');
+    }
+    const job = await this.queue.getJob(jobId);
+    if (!job) {
+      return { stopped: false, state: 'missing' };
+    }
+    const state = await job.getState();
+    if (state === 'waiting' || state === 'delayed') {
+      await job.remove();
+      await ioRedis.del(this.cancelKeyPrefix + jobId);
+      this.emitEvent(jobId, {
+        type: 'status',
+        state: 'failed',
+        progress: 0,
+        message: '任务已手动停止',
+      });
+      return { stopped: true, state: 'removed' };
+    }
+    await ioRedis.set(this.cancelKeyPrefix + jobId, '1', 'EX', 60 * 60);
+    this.emitEvent(jobId, {
+      type: 'status',
+      state: 'running',
+      progress: 0,
+      message: '正在停止任务...',
+    });
+    return { stopped: true, state };
   }
 
   private async handleJob(job: Job<MaterialsJobData, MaterialsJobResult>) {
@@ -367,12 +418,20 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     const startedAtMs = Date.now();
 
     while (true) {
+      const jobId = this.getJobId(job);
+      if (await this.isJobCancelled(jobId)) {
+        try {
+          await this.crawler.stopCrawl();
+        } catch (error) {
+          // Ignore stop errors while cancellation is in progress.
+        }
+        throw new UnrecoverableError('任务已手动停止');
+      }
       if (Date.now() - startedAtMs > timeoutMs) {
         throw new Error('Crawler timed out');
       }
 
       const status = await this.crawler.getStatus();
-      const jobId = this.getJobId(job);
       lastLogId = await this.emitLogs(jobId, lastLogId, job.data.platform);
 
       if (status.status === 'running') {
@@ -461,6 +520,9 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     let sawNonContent = false;
 
     while (Date.now() - resolveStartedAt < resolveTimeoutMs) {
+      if (await this.isJobCancelled(this.getJobId(job))) {
+        throw new UnrecoverableError('任务已手动停止');
+      }
       resolved = await this.materials.resolveOutputForJob({
         jobId: this.getJobId(job),
         platform: job.data.platform,
@@ -848,6 +910,14 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       return '';
     }
     return String(job.id);
+  }
+
+  private async isJobCancelled(jobId: string) {
+    if (!jobId) {
+      return false;
+    }
+    const cancelled = await ioRedis.get(this.cancelKeyPrefix + jobId);
+    return cancelled === '1';
   }
 
   private async downloadAssets(jsonPath: string, jobId: string) {

@@ -58,6 +58,11 @@ const getProxiedUrl = (url: string, platform: string, backendUrl: string): strin
     return `${backendUrl}/materials/image-proxy?url=${encodedUrl}&platform=${platform}`;
 };
 
+const isLikelyVideoUrl = (url?: string): boolean => {
+    if (!url) return false;
+    return /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(url);
+};
+
 /**
  * 格式化数字: 1000 -> 1k, 10000 -> 1w
  */
@@ -89,6 +94,9 @@ export const MaterialsResults = ({ items }: { items: MaterialItem[] }) => {
                     ? getProxiedUrl(item.coverUrl, item.platform, backendUrl)
                     : undefined;
                 const fallbackCoverUrl = item.coverUrl;
+                const displayVideoUrl = isLikelyVideoUrl(item.contentUrl)
+                    ? getProxiedUrl(item.contentUrl!, item.platform, backendUrl)
+                    : undefined;
 
                 const viralLevel = item.viralResult?.level;
                 const viralLabel = item.viralResult ? getViralLevelLabel(item.viralResult.level) : '';
@@ -133,9 +141,33 @@ export const MaterialsResults = ({ items }: { items: MaterialItem[] }) => {
                                             target.style.display = 'none';
                                             const parent = target.parentElement;
                                             if (parent) {
+                                                parent.innerHTML = '';
+                                                if (displayVideoUrl) {
+                                                    const video = document.createElement('video');
+                                                    video.src = displayVideoUrl;
+                                                    video.controls = true;
+                                                    video.muted = true;
+                                                    video.playsInline = true;
+                                                    video.preload = 'metadata';
+                                                    video.className = 'w-full object-cover';
+                                                    video.style.minHeight = '120px';
+                                                    video.style.maxHeight = '300px';
+                                                    parent.appendChild(video);
+                                                    return;
+                                                }
                                                 parent.innerHTML = `<div class="w-full flex items-center justify-center text-gray-500 text-xs" style="height:160px">图片加载失败</div>`;
                                             }
                                         }}
+                                    />
+                                ) : displayVideoUrl ? (
+                                    <video
+                                        src={displayVideoUrl}
+                                        className="w-full object-cover"
+                                        style={{ minHeight: '120px', maxHeight: '300px' }}
+                                        controls
+                                        muted
+                                        playsInline
+                                        preload="metadata"
                                     />
                                 ) : (
                                     <div className="w-full flex items-center justify-center text-gray-500 text-xs" style={{ height: '160px' }}>

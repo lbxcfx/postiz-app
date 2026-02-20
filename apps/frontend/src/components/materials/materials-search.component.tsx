@@ -13,6 +13,8 @@ export interface MaterialsSearchProps {
         limit: number;
         incremental: boolean;
     }) => void;
+    onStop?: () => void;
+    canStop?: boolean;
     isLoading?: boolean;
 }
 
@@ -28,7 +30,7 @@ export const MaterialsSearch = (props: MaterialsSearchProps) => {
     };
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-[150px_100px_minmax(220px,1fr)_180px_110px] gap-4 items-end bg-sixth p-4 rounded-lg border border-fifth">
+        <div className="grid grid-cols-1 md:grid-cols-[150px_100px_minmax(220px,1fr)_180px_220px] gap-4 items-end bg-sixth p-4 rounded-lg border border-fifth">
             <div className="w-[150px]">
                 <Select
                     label="平台"
@@ -86,7 +88,14 @@ export const MaterialsSearch = (props: MaterialsSearchProps) => {
                 />
                 <span>增量爬取并合并历史</span>
             </label>
-            <div className="flex items-end">
+            <div className="flex items-end gap-2">
+                <Button
+                    className="!h-[42px] min-w-[96px] !bg-red-600 hover:!bg-red-500 disabled:!bg-red-900/40"
+                    onClick={props.onStop}
+                    disabled={!props.canStop}
+                >
+                    停止
+                </Button>
                 <Button
                     className="!h-[42px] w-full"
                     onClick={handleSearch}
