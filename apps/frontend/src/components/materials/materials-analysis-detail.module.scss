@@ -48,6 +48,11 @@
   cursor: pointer;
 }
 
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .buttonGhost {
   border: 1px solid #cbd5e1;
   border-radius: 10px;
@@ -173,6 +178,11 @@
   border-bottom: none;
 }
 
+.line strong {
+  text-align: right;
+  word-break: break-all;
+}
+
 .tags {
   display: flex;
   flex-wrap: wrap;
@@ -213,6 +223,52 @@
   color: #64748b;
   font-size: 12px;
   margin: 0 0 8px;
+}
+
+.rawBlock {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.rawText {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.aiStatusCard {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.aiSpinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 3px solid rgba(255, 36, 66, 0.22);
+  border-top-color: #ff2442;
+  animation: aiSpin 0.9s linear infinite;
+}
+
+@keyframes aiSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .empty {

@@ -29,6 +29,8 @@ import {
   MaterialsService,
   MaterialsSearchQuery,
 } from '@gitroom/nestjs-libraries/materials/materials.service';
+import { MaterialsAnalysisService } from '@gitroom/nestjs-libraries/materials/materials.analysis.service';
+import { MaterialsAnalysisQueueService } from '@gitroom/nestjs-libraries/materials/materials.analysis.queue.service';
 
 interface MaterialsSearchRequest {
   platform: MediaCrawlerPlatform;
@@ -39,6 +41,26 @@ interface MaterialsSearchRequest {
   incremental?: boolean;
 }
 
+interface MaterialAnalysisTriggerRequest {
+  item?: {
+    platform?: string;
+    externalId?: string;
+    title?: string;
+    desc?: string;
+    coverUrl?: string;
+    contentUrl?: string;
+    authorName?: string;
+    authorUserId?: string;
+    createdAt?: string;
+    likedCount?: number;
+    collectedCount?: number;
+    commentCount?: number;
+    shareCount?: number;
+    followerCount?: number;
+  };
+  force?: boolean;
+}
+
 @ApiTags('Materials')
 @Controller('/materials')
 export class MaterialsController {
@@ -46,7 +68,9 @@ export class MaterialsController {
     private readonly queue: MaterialsQueueService,
     private readonly events: MaterialsEventsService,
     private readonly crawler: MediaCrawlerService,
-    private readonly materials: MaterialsService
+    private readonly materials: MaterialsService,
+    private readonly materialsAnalysis: MaterialsAnalysisService,
+    private readonly materialsAnalysisQueue: MaterialsAnalysisQueueService
   ) { }
 
   @Post('/search')
@@ -71,58 +95,23 @@ export class MaterialsController {
     };
     const queryHash = this.materials.buildQueryHash(query);
     const incremental = Boolean(body.forceCrawl || body.incremental);
-    const historyResult = await this.materials.resolveKeywordResults({
-      platform: body.platform,
-      keywords: body.keywords,
-      includeHistory: true,
-    });
+    const { historyResult, cachedAt } = await this.resolveSearchHistory(
+      query,
+      queryHash
+    );
 
     if (!incremental && historyResult?.count) {
       return {
         jobId: null as string | null,
         state: 'succeeded',
         cachedResults: this.transformLocalPaths(historyResult.data),
-        cachedAt: new Date().toISOString(),
+        cachedAt: cachedAt || new Date().toISOString(),
         resultPath: historyResult.resultPath,
         count: historyResult.count,
         preview: this.transformLocalPaths(historyResult.preview),
         cacheHit: true,
         incremental: false,
       };
-    }
-
-    if (!incremental) {
-      const cached = await this.materials.getCachedResult(query);
-      if (cached?.resultPath) {
-        if (!this.materials.isPreferredResultPath(cached.resultPath)) {
-          await this.materials.clearCachedResult(queryHash);
-        } else {
-          try {
-            const cachedResults = await this.crawler.readFile(
-              cached.resultPath,
-              true,
-              this.materials.getResultsLimit()
-            );
-            if (this.isCommentPayload(cachedResults)) {
-              await this.materials.clearCachedResult(queryHash);
-            } else {
-              return {
-                jobId: null as string | null,
-                state: 'succeeded',
-                cachedResults: this.transformLocalPaths(cachedResults),
-                cachedAt: cached.cachedAt,
-                resultPath: cached.resultPath,
-                count: cached.count,
-                preview: this.transformLocalPaths(cached.preview),
-                cacheHit: true,
-                incremental: false,
-              };
-            }
-          } catch (error) {
-            // Fallback to enqueue when cache is no longer valid.
-          }
-        }
-      }
     }
 
     const jobId = `job_${uuidv4()}`;
@@ -149,6 +138,82 @@ export class MaterialsController {
         ? this.transformLocalPaths(historyResult.preview)
         : null,
       incremental,
+    };
+  }
+
+  private async resolveSearchHistory(
+    query: MaterialsSearchQuery,
+    queryHash: string
+  ) {
+    let historyResult = await this.materials.resolveKeywordResults({
+      platform: query.platform,
+      keywords: query.keywords,
+      includeHistory: true,
+    });
+    let cachedAt: string | null = null;
+
+    if (!historyResult) {
+      const cached = await this.materials.getCachedResult(query);
+      if (cached?.resultPath) {
+        if (!this.materials.isPreferredResultPath(cached.resultPath)) {
+          await this.materials.clearCachedResult(queryHash);
+        } else {
+          try {
+            const cachedResults = await this.crawler.readFile(
+              cached.resultPath,
+              true,
+              this.materials.getResultsLimit()
+            );
+            if (this.isCommentPayload(cachedResults)) {
+              await this.materials.clearCachedResult(queryHash);
+            } else {
+              const normalized = this.normalizeResultsPayload(cachedResults);
+              const preview = Array.isArray(cached.preview)
+                ? cached.preview
+                : normalized.data.slice(0, 5);
+              historyResult = {
+                resultPath: cached.resultPath,
+                count: normalized.total,
+                preview,
+                data: normalized,
+                sourcePaths: [cached.resultPath],
+              };
+              cachedAt = cached.cachedAt || null;
+            }
+          } catch {
+            // Fallback to enqueue when cache is no longer valid.
+          }
+        }
+      }
+    }
+
+    return { historyResult, cachedAt };
+  }
+
+  private normalizeResultsPayload(payload: unknown) {
+    if (Array.isArray(payload)) {
+      return {
+        data: payload,
+        total: payload.length,
+      };
+    }
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      Array.isArray((payload as { data?: unknown[] }).data)
+    ) {
+      const list = (payload as { data: unknown[] }).data;
+      const totalCandidate = Number(
+        (payload as { total?: number | string }).total
+      );
+      return {
+        data: list,
+        total: Number.isFinite(totalCandidate) ? totalCandidate : list.length,
+      };
+    }
+    return {
+      data: [] as unknown[],
+      total: 0,
     };
   }
 
@@ -240,6 +305,99 @@ export class MaterialsController {
       preview: this.transformLocalPaths(result.preview),
       data: this.transformLocalPaths(data),
     };
+  }
+
+  @Get('/analysis')
+  async getAnalysis(
+    @GetOrgFromRequest() org: Organization,
+    @Query('platform') platform: string,
+    @Query('externalId') externalId: string
+  ) {
+    const normalizedPlatform = String(platform || '').trim().toLowerCase();
+    const normalizedExternalId = String(externalId || '').trim();
+    if (!normalizedPlatform || !normalizedExternalId) {
+      throw new BadRequestException('platform and externalId are required');
+    }
+    const result = await this.materialsAnalysis.getLatestAnalysis(
+      org.id,
+      normalizedPlatform,
+      normalizedExternalId
+    );
+    if (!result) {
+      return { found: false, data: null };
+    }
+    return { found: true, data: result };
+  }
+
+  @Post('/analysis/trigger')
+  async triggerAnalysis(
+    @GetOrgFromRequest() org: Organization,
+    @Body() body: MaterialAnalysisTriggerRequest
+  ) {
+    const item = body?.item;
+    if (!item) {
+      throw new BadRequestException('item is required');
+    }
+    const platform = String(item.platform || '').trim().toLowerCase();
+    const externalId = String(item.externalId || '').trim();
+    if (!platform || !externalId) {
+      throw new BadRequestException('item.platform and item.externalId are required');
+    }
+
+    const force = Boolean(body?.force);
+    if (!force) {
+      const existing = await this.materialsAnalysis.getLatestAnalysis(org.id, platform, externalId);
+      if (existing) {
+        return {
+          found: true,
+          source: 'cache',
+          data: existing,
+        };
+      }
+    }
+
+    const queued = await this.materialsAnalysisQueue.enqueueJob({
+      orgId: org.id,
+      force,
+      item: {
+        platform,
+        externalId,
+        title: item.title,
+        desc: item.desc,
+        coverUrl: item.coverUrl,
+        contentUrl: item.contentUrl,
+        authorName: item.authorName,
+        authorUserId: item.authorUserId,
+        createdAt: item.createdAt,
+        likedCount: item.likedCount,
+        collectedCount: item.collectedCount,
+        commentCount: item.commentCount,
+        shareCount: item.shareCount,
+        followerCount: item.followerCount,
+      },
+    });
+    return {
+      accepted: true,
+      jobId: queued.jobId,
+      reused: queued.reused,
+      state: queued.reused ? 'running' : 'queued',
+    };
+  }
+
+  @Get('/analysis/job-status')
+  async getAnalysisJobStatus(
+    @GetOrgFromRequest() org: Organization,
+    @Query('jobId') jobId: string
+  ) {
+    const normalizedJobId = String(jobId || '').trim();
+    if (!normalizedJobId) {
+      throw new BadRequestException('jobId is required');
+    }
+    const status = await this.materialsAnalysisQueue.getJobStatus(
+      normalizedJobId,
+      org.id
+    );
+    return status;
   }
 
   @Get('/file/:jobId/:filename')

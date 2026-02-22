@@ -6,6 +6,8 @@ import { ViralResult } from '@gitroom/frontend/components/materials/viral-score'
 const MATERIALS_ANALYSIS_DATASET_KEY = 'postiz_materials_analysis_dataset_v1';
 const MATERIALS_ANALYSIS_DATASET_VERSION = 1;
 const MATERIALS_DATASET_LIMIT = 500;
+const MATERIALS_LAST_RESULTS_KEY = 'postiz_materials_last_results_v1';
+const MATERIALS_LAST_RESULTS_LIMIT = 200;
 
 type MaterialsDatasetSnapshot = {
   version: number;
@@ -138,6 +140,42 @@ export const persistMaterialDataset = (items: MaterialItem[]) => {
 
 export const loadMaterialDataset = (): MaterialItem[] => {
   return getDatasetSnapshot()?.items || [];
+};
+
+export const persistLastMaterialResults = (items: MaterialItem[]) => {
+  if (typeof window === 'undefined' || !Array.isArray(items) || items.length === 0) {
+    return;
+  }
+  const normalized = items
+    .map((item) => normalizeMaterialItem(item))
+    .filter((item): item is MaterialItem => Boolean(item))
+    .slice(0, MATERIALS_LAST_RESULTS_LIMIT);
+  if (!normalized.length) {
+    return;
+  }
+  const payload: MaterialsDatasetSnapshot = {
+    version: MATERIALS_ANALYSIS_DATASET_VERSION,
+    savedAt: new Date().toISOString(),
+    items: normalized,
+  };
+  window.localStorage.setItem(MATERIALS_LAST_RESULTS_KEY, JSON.stringify(payload));
+};
+
+export const loadLastMaterialResults = (): MaterialItem[] => {
+  if (typeof window === 'undefined') return [];
+  const raw = window.localStorage.getItem(MATERIALS_LAST_RESULTS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as MaterialsDatasetSnapshot;
+    const items = Array.isArray(parsed.items)
+      ? parsed.items
+          .map((item) => normalizeMaterialItem(item))
+          .filter((item): item is MaterialItem => Boolean(item))
+      : [];
+    return items;
+  } catch {
+    return [];
+  }
 };
 
 export const findMaterialFromDataset = (storageKey: string): MaterialItem | null => {

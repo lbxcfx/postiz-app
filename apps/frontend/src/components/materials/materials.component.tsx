@@ -16,6 +16,8 @@ import { useRouter } from "next/navigation";
 import { MaterialItem } from "./materials.types";
 import {
   getMaterialStorageKey,
+  loadLastMaterialResults,
+  persistLastMaterialResults,
   persistMaterialDataset,
 } from "./materials-analysis.storage";
 
@@ -266,6 +268,7 @@ export const MaterialsComponent = () => {
   const smsVerifyingRef = useRef(false);
   const requestedLoginTypeRef = useRef<"qrcode" | "phone" | null>(null);
   const autoLoginPromptedRef = useRef(false);
+  const restoredResultsRef = useRef(false);
 
   // ────────── Viral Filtering & Scoring ──────────
 
@@ -313,6 +316,26 @@ export const MaterialsComponent = () => {
     }
     persistMaterialDataset(scoredResults);
   }, [scoredResults]);
+
+  useEffect(() => {
+    if (restoredResultsRef.current) {
+      return;
+    }
+    restoredResultsRef.current = true;
+    const restored = loadLastMaterialResults();
+    if (!restored.length) {
+      return;
+    }
+    setRawResults(restored);
+    setStatusMessage("已恢复上次关键词搜索结果");
+  }, []);
+
+  useEffect(() => {
+    if (!rawResults.length) {
+      return;
+    }
+    persistLastMaterialResults(rawResults);
+  }, [rawResults]);
 
   const handleOpenAnalysis = useCallback(
     (item: MaterialItem) => {
