@@ -6,20 +6,55 @@ import { organizationId } from '@gitroom/nestjs-libraries/temporal/temporal.sear
 import { ReviewStatus } from '@prisma/client';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import { createHash } from 'crypto';
 
 export type StartFactoryWorkflowInput = {
   operatorId: string;
-  integrationId: string;
-  collectParams: {
+  integrationId?: string;
+  collectParams?: {
     platform: 'xhs' | 'dy';
     keywords: string;
     startPage?: number;
     pageLimit?: number;
     queryHash?: string;
   };
+  sourceContentIds?: string[];
+  generationMode?: 'text' | 'video' | 'hybrid';
+  videoStrategy?:
+    | 'auto'
+    | 'qwen-text-to-video'
+    | 'qwen-image-to-video'
+    | 'qwen-image-to-video-first-last';
+  imageCount?: number;
+  publishEnabled?: boolean;
+  n8nWebhookUrl?: string;
+  n8nWorkflowId?: string;
   productProfile?: Record<string, unknown>;
   scheduleAt?: string;
   idempotencyKey?: string;
+};
+
+export type StartCreationInput = {
+  operatorId: string;
+  sourceContentIds: string[];
+  generationMode?: 'text' | 'video' | 'hybrid';
+  videoStrategy?:
+    | 'auto'
+    | 'qwen-text-to-video'
+    | 'qwen-image-to-video'
+    | 'qwen-image-to-video-first-last';
+  imageCount?: number;
+  productProfile?: Record<string, unknown>;
+  n8nWebhookUrl?: string;
+  n8nWorkflowId?: string;
+  idempotencyKey?: string;
+};
+
+export type CreationN8nWorkflowOption = {
+  id: string;
+  name: string;
+  webhookUrl: string;
+  description?: string;
 };
 
 type SortOrder = 'asc' | 'desc';
@@ -82,6 +117,28 @@ export class FactoryService {
     }
   }
 
+  private normalizeGeneratedMediaAsset(input: unknown) {
+    if (!input || typeof input !== 'object') {
+      return null;
+    }
+    const row = input as Record<string, unknown>;
+    const id = typeof row.id === 'string' && row.id.trim() ? row.id.trim() : '';
+    const rawPath =
+      (typeof row.path === 'string' && row.path) ||
+      (typeof row.url === 'string' && row.url) ||
+      (typeof row.localPath === 'string' && row.localPath) ||
+      '';
+    const path = this.normalizeMediaPath(rawPath);
+    if (!path) {
+      return null;
+    }
+    return {
+      id: id || createHash('md5').update(path).digest('hex').slice(0, 16),
+      path,
+      type: this.inferMediaType(path),
+    } as const;
+  }
+
   private normalizeMediaPath(pathValue: string) {
     if (!pathValue) return '';
     if (/^https?:\/\//i.test(pathValue)) return pathValue;
@@ -122,15 +179,111 @@ export class FactoryService {
     return id.includes('xiaohongshu') || id === 'xhs';
   }
 
+  private parseCreationN8nWorkflowsFromEnv(): CreationN8nWorkflowOption[] {
+    const raw =
+      process.env.FACTORY_N8N_WORKFLOWS ||
+      process.env.N8N_WORKFLOW_OPTIONS ||
+      process.env.N8N_WORKFLOWS ||
+      '';
+    if (!raw.trim()) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed
+        .map((item) => {
+          const row = item as Record<string, unknown>;
+          const id = String(row.id || '').trim();
+          const name = String(row.name || row.label || id).trim();
+          const webhookUrl = String(
+            row.webhookUrl || row.webhook || row.url || ''
+          ).trim();
+          const description = String(row.description || '').trim();
+          if (!id || !/^https?:\/\//i.test(webhookUrl)) {
+            return null;
+          }
+          return {
+            id,
+            name: name || id,
+            webhookUrl,
+            description: description || undefined,
+          } satisfies CreationN8nWorkflowOption;
+        })
+        .filter(Boolean) as CreationN8nWorkflowOption[];
+    } catch {
+      return [];
+    }
+  }
+
+  private resolveCreationN8nWebhook(input: {
+    n8nWorkflowId?: string;
+    n8nWebhookUrl?: string;
+  }) {
+    const n8nWorkflowId = (input.n8nWorkflowId || '').trim();
+    const n8nWebhookUrl = (input.n8nWebhookUrl || '').trim();
+    if (n8nWebhookUrl) {
+      return {
+        n8nWorkflowId: n8nWorkflowId || undefined,
+        n8nWebhookUrl,
+      };
+    }
+    if (!n8nWorkflowId) {
+      return {
+        n8nWorkflowId: undefined,
+        n8nWebhookUrl: '',
+      };
+    }
+    const options = this.parseCreationN8nWorkflowsFromEnv();
+    const matched = options.find((item) => item.id === n8nWorkflowId);
+    if (!matched) {
+      throw this.badRequest(
+        'FACTORY_N8N_WORKFLOW_NOT_FOUND',
+        `n8n workflow not found: ${n8nWorkflowId}`
+      );
+    }
+    return {
+      n8nWorkflowId: matched.id,
+      n8nWebhookUrl: matched.webhookUrl,
+    };
+  }
+
+  listCreationN8nWorkflows() {
+    return {
+      items: this.parseCreationN8nWorkflowsFromEnv().map((item) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description || null,
+      })),
+    };
+  }
+
   async startWorkflow(orgId: string, input: StartFactoryWorkflowInput) {
-    if (!input?.integrationId) {
+    const publishEnabled = input.publishEnabled !== false;
+    if (publishEnabled && !input?.integrationId) {
       throw this.badRequest('FACTORY_INTEGRATION_REQUIRED', 'integrationId is required');
     }
-    if (!input?.collectParams?.platform || !input?.collectParams?.keywords) {
+    const hasSourceIds = Array.isArray(input?.sourceContentIds) && input.sourceContentIds.length > 0;
+    const hasCollectParams = Boolean(input?.collectParams?.platform && input?.collectParams?.keywords);
+    if (!hasSourceIds && !hasCollectParams) {
       throw this.badRequest(
         'FACTORY_COLLECT_PARAMS_REQUIRED',
-        'collectParams.platform and collectParams.keywords are required'
+        'collectParams.platform + collectParams.keywords or sourceContentIds is required'
       );
+    }
+    if (hasSourceIds) {
+      const sourceCount = await this.prisma.sourceContent.count({
+        where: {
+          organizationId: orgId,
+          deletedAt: null,
+          id: { in: input.sourceContentIds || [] },
+        },
+      });
+      if (sourceCount === 0) {
+        throw this.badRequest('FACTORY_SOURCE_NOT_FOUND', 'No valid sourceContentIds found');
+      }
     }
 
     const workflowId = input.idempotencyKey
@@ -155,7 +308,12 @@ export class FactoryService {
         organizationId: orgId,
         reviewStatus: ReviewStatus.PENDING,
         workflowId,
-        productProfile: (input.productProfile || {}) as object,
+        productProfile: ({
+          ...(input.productProfile || {}),
+          generationMode: input.generationMode || 'text',
+          videoStrategy: input.videoStrategy || 'auto',
+          publishEnabled,
+        } || {}) as object,
       },
     });
 
@@ -168,12 +326,18 @@ export class FactoryService {
           {
             organizationId: orgId,
             operatorId: input.operatorId,
-            integrationId: input.integrationId,
+            integrationId: input.integrationId || '',
             collectParams: input.collectParams,
-            productProfile: input.productProfile || {},
-            scheduleAt: input.scheduleAt,
-            workflowId,
-            draftId: draft.id,
+          sourceContentIds: input.sourceContentIds || [],
+          generationMode: input.generationMode || 'text',
+          videoStrategy: input.videoStrategy || 'auto',
+          imageCount: Number(input.imageCount || 0) || undefined,
+          n8nWorkflowId: input.n8nWorkflowId || undefined,
+          publishEnabled,
+          productProfile: input.productProfile || {},
+          scheduleAt: input.scheduleAt,
+          workflowId,
+          draftId: draft.id,
           },
         ],
         typedSearchAttributes: new TypedSearchAttributes([
@@ -193,8 +357,15 @@ export class FactoryService {
         resourceId: workflowId,
         detail: {
           draftId: draft.id,
-          integrationId: input.integrationId,
-          collectParams: input.collectParams,
+          integrationId: input.integrationId || null,
+          collectParams: input.collectParams || null,
+          sourceContentIds: input.sourceContentIds || [],
+          generationMode: input.generationMode || 'text',
+          videoStrategy: input.videoStrategy || 'auto',
+          imageCount: Number(input.imageCount || 0) || null,
+          n8nWorkflowId: input.n8nWorkflowId || null,
+          n8nWebhookUrl: input.n8nWebhookUrl || null,
+          publishEnabled,
         },
       },
     });
@@ -203,6 +374,668 @@ export class FactoryService {
       workflowId,
       draftId: draft.id,
       existed: false,
+    };
+  }
+
+  private async buildCreationBrief(orgId: string, sourceContentIds: string[]) {
+    const sourceContents = await this.prisma.sourceContent.findMany({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        id: { in: sourceContentIds },
+      },
+      include: {
+        mediaAssets: {
+          select: {
+            type: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+    });
+    const rows = await this.prisma.analysisResult.findMany({
+      where: {
+        sourceContentId: { in: sourceContentIds },
+        type: { in: ['material_video_analysis_v1', 'video_analysis'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+
+    const latestBySource = new Map<string, any>();
+    for (const row of rows) {
+      if (!latestBySource.has(row.sourceContentId)) {
+        latestBySource.set(row.sourceContentId, row.result || {});
+      }
+    }
+
+    const hotKeywords: string[] = [];
+    const styleTags: string[] = [];
+    const optimizationSuggestions: string[] = [];
+    const scoreList: number[] = [];
+
+    for (const source of sourceContents) {
+      const raw = latestBySource.get(source.id) || {};
+      const payload = typeof raw === 'object' && raw ? raw : {};
+      const analysis = (payload as any).analysis || payload;
+      const tagLayer = (analysis as any)?.tagLayer || {};
+      const scoreLayer = (analysis as any)?.scoreLayer || {};
+      const summaryLayer = (payload as any)?.summaryLayer || {};
+
+      (Array.isArray(tagLayer.hotKeywords) ? tagLayer.hotKeywords : [])
+        .filter((item: unknown) => typeof item === 'string' && item.trim())
+        .forEach((item: string) => hotKeywords.push(item.trim()));
+      (Array.isArray(tagLayer.styleTags) ? tagLayer.styleTags : [])
+        .filter((item: unknown) => typeof item === 'string' && item.trim())
+        .forEach((item: string) => styleTags.push(item.trim()));
+      (Array.isArray(summaryLayer.optimizationSuggestions)
+        ? summaryLayer.optimizationSuggestions
+        : []
+      )
+        .filter((item: unknown) => typeof item === 'string' && item.trim())
+        .forEach((item: string) => optimizationSuggestions.push(item.trim()));
+
+      const overall = Number(scoreLayer.overallScore || 0);
+      if (Number.isFinite(overall) && overall > 0) {
+        scoreList.push(overall);
+      }
+    }
+
+    const hasVideo = sourceContents.some((item) =>
+      item.mediaAssets.some((asset) => asset.type === 'video')
+    );
+    const averageScore = scoreList.length
+      ? Number((scoreList.reduce((sum, item) => sum + item, 0) / scoreList.length).toFixed(1))
+      : null;
+    const recommendedMode = hasVideo || (averageScore !== null && averageScore >= 75) ? 'hybrid' : 'text';
+
+    return {
+      sourceCount: sourceContents.length,
+      hasVideo,
+      averageScore,
+      hotKeywords: Array.from(new Set(hotKeywords)).slice(0, 8),
+      styleTags: Array.from(new Set(styleTags)).slice(0, 6),
+      optimizationSuggestions: Array.from(new Set(optimizationSuggestions)).slice(0, 6),
+      recommendedMode,
+    };
+  }
+
+  private async notifyN8nWebhook(url: string, payload: Record<string, unknown>) {
+    const normalized = (url || '').trim();
+    if (!/^https?:\/\//i.test(normalized)) {
+      throw new Error('n8n webhook url must start with http/https');
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(normalized, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async startCreation(orgId: string, input: StartCreationInput) {
+    const sourceContentIds = Array.from(new Set((input.sourceContentIds || []).filter(Boolean)));
+    if (sourceContentIds.length === 0) {
+      throw this.badRequest('FACTORY_SOURCE_REQUIRED', 'sourceContentIds is required');
+    }
+    const brief = await this.buildCreationBrief(orgId, sourceContentIds);
+    const generationMode = input.generationMode || (brief.recommendedMode as 'text' | 'video' | 'hybrid');
+    const videoStrategy = input.videoStrategy || 'auto';
+    const imageCount = Math.max(0, Math.min(Number(input.imageCount || 0) || 0, 12)) || undefined;
+    const n8nResolved = this.resolveCreationN8nWebhook({
+      n8nWorkflowId: input.n8nWorkflowId,
+      n8nWebhookUrl: input.n8nWebhookUrl,
+    });
+    const idempotencyKey =
+      input.idempotencyKey ||
+      `creation_${createHash('md5')
+        .update(
+          `${orgId}:${sourceContentIds.join(',')}:${generationMode}:${videoStrategy}:${imageCount || 0}:${n8nResolved.n8nWorkflowId || ''}`
+        )
+        .digest('hex')
+        .slice(0, 16)}_${Date.now()}`;
+
+    const started = await this.startWorkflow(orgId, {
+      operatorId: input.operatorId,
+      sourceContentIds,
+      generationMode,
+      videoStrategy,
+      imageCount,
+      productProfile: input.productProfile || {},
+      publishEnabled: false,
+      idempotencyKey,
+      n8nWebhookUrl: n8nResolved.n8nWebhookUrl,
+      n8nWorkflowId: n8nResolved.n8nWorkflowId,
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: orgId,
+        operator: input.operatorId,
+        action: 'creation_start',
+        resourceType: 'workflow',
+        resourceId: started.workflowId,
+        detail: {
+          draftId: started.draftId,
+          sourceContentIds,
+          generationMode,
+          videoStrategy,
+          imageCount: imageCount || null,
+          n8nWorkflowId: n8nResolved.n8nWorkflowId || null,
+          brief,
+        },
+      },
+    });
+
+    if (n8nResolved.n8nWebhookUrl) {
+      try {
+        await this.notifyN8nWebhook(n8nResolved.n8nWebhookUrl, {
+          event: 'generation.created',
+          organizationId: orgId,
+          workflowId: started.workflowId,
+          draftId: started.draftId,
+          sourceContentIds,
+          generationMode,
+          videoStrategy,
+          imageCount: imageCount || null,
+          n8nWorkflowId: n8nResolved.n8nWorkflowId || null,
+          brief,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        await this.prisma.auditLog.create({
+          data: {
+            organizationId: orgId,
+            operator: input.operatorId,
+            action: 'creation_n8n_failed',
+            resourceType: 'workflow',
+            resourceId: started.workflowId,
+            detail: {
+              workflowId: n8nResolved.n8nWorkflowId || null,
+              url: n8nResolved.n8nWebhookUrl,
+              error: error instanceof Error ? error.message : 'unknown error',
+            },
+          },
+        });
+      }
+    }
+
+    return {
+      ...started,
+      sourceContentIds,
+      generationMode,
+      videoStrategy,
+      imageCount: imageCount || null,
+      n8nWorkflowId: n8nResolved.n8nWorkflowId || null,
+      brief,
+    };
+  }
+
+  async getCreationTasks(
+    orgId: string,
+    options?: {
+      limit?: number;
+    }
+  ) {
+    const limit = Math.min(Math.max(options?.limit || 20, 1), 100);
+    const logs = await this.prisma.auditLog.findMany({
+      where: {
+        organizationId: orgId,
+        action: 'creation_start',
+        resourceType: 'workflow',
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        resourceId: true,
+        detail: true,
+        createdAt: true,
+      },
+    });
+
+    const workflowIds = Array.from(new Set(logs.map((item) => item.resourceId).filter(Boolean)));
+    const statuses = await this.getWorkflowStatuses(orgId, workflowIds);
+    const statusMap = new Map((statuses.statuses || []).map((item) => [item.workflowId, item.status]));
+    const drafts = await this.prisma.contentDraft.findMany({
+      where: {
+        organizationId: orgId,
+        workflowId: { in: workflowIds },
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        workflowId: true,
+        reviewStatus: true,
+        score: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const draftMap = new Map<string, (typeof drafts)[number]>();
+    for (const draft of drafts) {
+      if (draft.workflowId && !draftMap.has(draft.workflowId)) {
+        draftMap.set(draft.workflowId, draft);
+      }
+    }
+
+    const draftIds = drafts.map((item) => item.id);
+    const generationLogs = draftIds.length
+      ? await this.prisma.auditLog.findMany({
+          where: {
+            organizationId: orgId,
+            action: 'generate',
+            resourceType: 'draft',
+            resourceId: { in: draftIds },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            resourceId: true,
+            detail: true,
+          },
+        })
+      : [];
+
+    const generationMap = new Map<
+      string,
+      {
+        requested: number | null;
+        generated: number;
+        failed: number;
+        assets: number;
+        errors: string[];
+      }
+    >();
+    for (const log of generationLogs) {
+      if (!log.resourceId || generationMap.has(log.resourceId)) {
+        continue;
+      }
+      const detail = (log.detail || {}) as Record<string, any>;
+      const generatedImages = (detail.generatedImages || {}) as Record<string, any>;
+      const requestedRaw = Number(generatedImages.requested);
+      const generatedRaw = Number(generatedImages.generated);
+      const failedRaw = Number(generatedImages.failed);
+      const assetsRaw = Array.isArray(generatedImages.assets)
+        ? generatedImages.assets.length
+        : Number(generatedImages.assets);
+      const errorsRaw = Array.isArray(generatedImages.errors)
+        ? generatedImages.errors
+            .filter((item) => typeof item === 'string' && item.trim().length > 0)
+            .slice(0, 5)
+        : [];
+
+      generationMap.set(log.resourceId, {
+        requested: Number.isFinite(requestedRaw) ? requestedRaw : null,
+        generated: Number.isFinite(generatedRaw) ? generatedRaw : 0,
+        failed: Number.isFinite(failedRaw) ? failedRaw : 0,
+        assets: Number.isFinite(assetsRaw) ? assetsRaw : 0,
+        errors: errorsRaw,
+      });
+    }
+
+    const resolveCreationTaskStatus = (input: {
+      workflowStatus: string;
+      reviewStatus: string | null | undefined;
+      generationMode: string;
+      imageGeneration: {
+        requested: number | null;
+        generated: number;
+        failed: number;
+        assets: number;
+        errors: string[];
+      } | null;
+    }) => {
+      const normalizedWorkflowStatus = String(input.workflowStatus || 'UNKNOWN').toUpperCase();
+      if (normalizedWorkflowStatus !== 'RUNNING') {
+        return normalizedWorkflowStatus;
+      }
+      if (input.reviewStatus === 'REJECTED') {
+        return 'FAILED';
+      }
+      if (!input.imageGeneration) {
+        return normalizedWorkflowStatus;
+      }
+
+      const requested = Number(input.imageGeneration.requested);
+      if (!Number.isFinite(requested)) {
+        return normalizedWorkflowStatus;
+      }
+      const requestedImages = Math.max(0, requested);
+      const settled =
+        requestedImages <= 0 ||
+        input.imageGeneration.generated + input.imageGeneration.failed >= requestedImages;
+      if (!settled) {
+        return normalizedWorkflowStatus;
+      }
+      if (
+        requestedImages > 0 &&
+        input.imageGeneration.generated <= 0 &&
+        input.imageGeneration.failed >= requestedImages
+      ) {
+        return 'FAILED';
+      }
+      if (input.generationMode === 'text') {
+        return 'COMPLETED';
+      }
+      return normalizedWorkflowStatus;
+    };
+
+    return {
+      items: logs.map((log) => {
+        const detail = (log.detail || {}) as Record<string, any>;
+        const draft = draftMap.get(log.resourceId);
+        const requestedRaw = Number(detail.imageCount);
+        const requested =
+          Number.isFinite(requestedRaw) && requestedRaw >= 0 ? requestedRaw : null;
+        const imageGeneration =
+          (draft ? generationMap.get(draft.id) : null) ||
+          (requested !== null
+            ? {
+                requested,
+                generated: 0,
+                failed: 0,
+                assets: 0,
+                errors: [],
+              }
+            : null);
+        const workflowStatus = statusMap.get(log.resourceId) || 'UNKNOWN';
+        const status = resolveCreationTaskStatus({
+          workflowStatus,
+          reviewStatus: draft?.reviewStatus || null,
+          generationMode: detail.generationMode || 'text',
+          imageGeneration,
+        });
+        return {
+          workflowId: log.resourceId,
+          createdAt: log.createdAt,
+          status,
+          workflowStatus,
+          statusReason:
+            status === 'FAILED' && imageGeneration?.errors?.length
+              ? imageGeneration.errors[0]
+              : null,
+          draftId: draft?.id || detail.draftId || null,
+          reviewStatus: draft?.reviewStatus || null,
+          score: draft?.score || null,
+          generationMode: detail.generationMode || 'text',
+          videoStrategy: detail.videoStrategy || 'auto',
+          sourceCount: Array.isArray(detail.sourceContentIds) ? detail.sourceContentIds.length : 0,
+          brief: detail.brief || null,
+          imageGeneration,
+        };
+      }),
+      total: logs.length,
+    };
+  }
+
+  async getCreationTaskDetail(orgId: string, workflowId: string) {
+    const creationLog = await this.prisma.auditLog.findFirst({
+      where: {
+        organizationId: orgId,
+        action: 'creation_start',
+        resourceType: 'workflow',
+        resourceId: workflowId,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        detail: true,
+        createdAt: true,
+      },
+    });
+
+    let workflowStatus = 'UNKNOWN';
+    try {
+      const workflow = await this.temporal.client.getWorkflowHandle(workflowId);
+      const description = await workflow.describe();
+      workflowStatus = description.status.name;
+    } catch {
+      workflowStatus = 'UNKNOWN';
+    }
+
+    const draft = await this.prisma.contentDraft.findFirst({
+      where: {
+        organizationId: orgId,
+        workflowId,
+        deletedAt: null,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        title: true,
+        content: true,
+        score: true,
+        reviewStatus: true,
+        reviewNote: true,
+        sourceContentIds: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!draft) {
+      return {
+        workflowId,
+        workflowStatus,
+        createdAt: creationLog?.createdAt || null,
+        generationMode:
+          typeof (creationLog?.detail as Record<string, unknown> | undefined)?.generationMode ===
+          'string'
+            ? (creationLog?.detail as Record<string, string>).generationMode
+            : 'text',
+        videoStrategy:
+          typeof (creationLog?.detail as Record<string, unknown> | undefined)?.videoStrategy ===
+          'string'
+            ? (creationLog?.detail as Record<string, string>).videoStrategy
+            : 'auto',
+        draft: null,
+        preview: {
+          images: [],
+          videos: [],
+          imageGeneration: null,
+          videoGeneration: null,
+        },
+        sourceContents: [],
+        actions: {
+          canApprove: false,
+          canRegenerate: false,
+          canDiscard: workflowStatus === 'RUNNING',
+        },
+      };
+    }
+
+    const [generateLog, videoLogs, videoFailedLog] = await Promise.all([
+      this.prisma.auditLog.findFirst({
+        where: {
+          organizationId: orgId,
+          action: 'generate',
+          resourceType: 'draft',
+          resourceId: draft.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          detail: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.auditLog.findMany({
+        where: {
+          organizationId: orgId,
+          action: 'generate_video',
+          resourceType: 'draft',
+          resourceId: draft.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+        select: {
+          detail: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.auditLog.findFirst({
+        where: {
+          organizationId: orgId,
+          action: 'generate_video_failed',
+          resourceType: 'draft',
+          resourceId: draft.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          detail: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    const generateDetail = (generateLog?.detail || {}) as Record<string, any>;
+    const generatedImages = (generateDetail.generatedImages || {}) as Record<string, any>;
+    const imageErrors = Array.isArray(generatedImages.errors)
+      ? generatedImages.errors
+          .filter((item) => typeof item === 'string' && item.trim().length > 0)
+          .slice(0, 5)
+      : [];
+    const imageAssets = Array.isArray(generatedImages.assets)
+      ? generatedImages.assets
+          .map((item) => this.normalizeGeneratedMediaAsset(item))
+          .filter(
+            (item): item is { id: string; path: string; type: 'image' | 'video' } =>
+              Boolean(item)
+          )
+      : [];
+
+    const videoAssets = Array.from(
+      new Map(
+        videoLogs
+          .map((log) => {
+            const detail = (log.detail || {}) as Record<string, any>;
+            const normalized = this.normalizeGeneratedMediaAsset({
+              id: detail.mediaId,
+              path: detail.mediaPath,
+            });
+            if (!normalized) {
+              return null;
+            }
+            return [
+              normalized.path,
+              {
+                ...normalized,
+                strategy: typeof detail.strategy === 'string' ? detail.strategy : null,
+                createdAt: log.createdAt,
+              },
+            ] as const;
+          })
+          .filter(Boolean) as Array<
+          readonly [
+            string,
+            {
+              id: string;
+              path: string;
+              type: 'image' | 'video';
+              strategy: string | null;
+              createdAt: Date;
+            },
+          ]
+        >
+      ).values()
+    ).map((item) => ({
+      id: item.id,
+      path: item.path,
+      type: item.type,
+      strategy: item.strategy,
+      createdAt: item.createdAt,
+    }));
+
+    const videoFailedDetail = (videoFailedLog?.detail || {}) as Record<string, any>;
+    const videoErrors = Array.isArray(videoFailedDetail.errors)
+      ? videoFailedDetail.errors
+          .filter((item) => typeof item === 'string' && item.trim().length > 0)
+          .slice(0, 5)
+      : [];
+
+    const sourceContentIds = this.parseSourceContentIds(draft.sourceContentIds);
+    const sourceContents = sourceContentIds.length
+      ? await this.prisma.sourceContent.findMany({
+          where: {
+            organizationId: orgId,
+            id: { in: sourceContentIds },
+            deletedAt: null,
+          },
+          select: {
+            id: true,
+            platform: true,
+            title: true,
+            authorName: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        })
+      : [];
+
+    const creationDetail = (creationLog?.detail || {}) as Record<string, any>;
+    const canReview =
+      workflowStatus === 'RUNNING' &&
+      typeof draft.content === 'string' &&
+      draft.content.trim().length > 0;
+
+    return {
+      workflowId,
+      workflowStatus,
+      createdAt: creationLog?.createdAt || draft.createdAt,
+      generationMode:
+        typeof creationDetail.generationMode === 'string'
+          ? creationDetail.generationMode
+          : 'text',
+      videoStrategy:
+        typeof creationDetail.videoStrategy === 'string'
+          ? creationDetail.videoStrategy
+          : 'auto',
+      draft: {
+        id: draft.id,
+        title: draft.title,
+        content: draft.content,
+        score: draft.score,
+        reviewStatus: draft.reviewStatus,
+        reviewNote: draft.reviewNote,
+        createdAt: draft.createdAt,
+        updatedAt: draft.updatedAt,
+      },
+      preview: {
+        images: imageAssets,
+        videos: videoAssets,
+        imageGeneration: {
+          requested: Number.isFinite(Number(generatedImages.requested))
+            ? Number(generatedImages.requested)
+            : null,
+          generated: Number.isFinite(Number(generatedImages.generated))
+            ? Number(generatedImages.generated)
+            : 0,
+          failed: Number.isFinite(Number(generatedImages.failed))
+            ? Number(generatedImages.failed)
+            : 0,
+          errors: imageErrors,
+        },
+        videoGeneration: {
+          generated: videoAssets.length,
+          errors: videoErrors,
+        },
+      },
+      sourceContents,
+      actions: {
+        canApprove: canReview,
+        canRegenerate: canReview,
+        canDiscard: canReview,
+      },
     };
   }
 

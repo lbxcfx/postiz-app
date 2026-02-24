@@ -8,14 +8,24 @@ import {
 export type ContentFactoryInput = {
   organizationId: string;
   operatorId: string;
-  integrationId: string;
-  collectParams: {
+  integrationId?: string;
+  collectParams?: {
     platform: 'xhs' | 'dy';
     keywords: string;
     startPage?: number;
     pageLimit?: number;
     queryHash?: string;
   };
+  sourceContentIds?: string[];
+  generationMode?: 'text' | 'video' | 'hybrid';
+  videoStrategy?:
+    | 'auto'
+    | 'qwen-text-to-video'
+    | 'qwen-image-to-video'
+    | 'qwen-image-to-video-first-last';
+  imageCount?: number;
+  n8nWorkflowId?: string;
+  publishEnabled?: boolean;
   productProfile?: Record<string, unknown>;
   scheduleAt?: string;
   workflowId?: string;
@@ -26,12 +36,13 @@ const {
   collectContent,
   analyzeContent,
   generateDraft,
+  generateVideoAssets,
   updateDraftReviewState,
   publishContent,
   markWorkflowFailed,
 } = proxyActivities<ContentFactoryActivity>({
   taskQueue: 'main',
-  startToCloseTimeout: '10 minute',
+  startToCloseTimeout: '30 minute',
   retry: {
     maximumAttempts: 3,
     backoffCoefficient: 2,
@@ -60,8 +71,18 @@ export async function contentFactoryWorkflow(input: ContentFactoryInput) {
       analysisResult,
       existingDraftId: input.draftId,
     });
+    const generationMode = input.generationMode || 'text';
+    const videoResult =
+      generationMode === 'video' || generationMode === 'hybrid'
+        ? await generateVideoAssets({
+            organizationId: input.organizationId,
+            operatorId: input.operatorId,
+            draftId: draft.id,
+            sourceContentIds: collectResult.sourceContentIds,
+            strategy: input.videoStrategy || 'auto',
+          })
+        : null;
 
-    let rejectionCount = 0;
     while (true) {
       await condition(() => !!reviewSignal);
       const current = reviewSignal!;
@@ -77,7 +98,6 @@ export async function contentFactoryWorkflow(input: ContentFactoryInput) {
         break;
       }
 
-      rejectionCount += 1;
       await updateDraftReviewState({
         draftId: draft.id,
         reviewStatus: 'REGENERATING',
@@ -92,19 +112,17 @@ export async function contentFactoryWorkflow(input: ContentFactoryInput) {
         regenerateHint: current.note,
         existingDraftId: draft.id,
       });
+    }
 
-      if (rejectionCount >= 3) {
-        await updateDraftReviewState({
-          draftId: draft.id,
-          reviewStatus: 'REJECTED',
-          reviewedBy: current.operator || input.operatorId,
-          reviewNote: current.note,
-        });
-        return {
-          status: 'rejected',
-          draftId: draft.id,
-        };
-      }
+    if (input.publishEnabled === false) {
+      return {
+        status: 'generated',
+        draftId: draft.id,
+        videoResult,
+      };
+    }
+    if (!input.integrationId) {
+      throw new Error('integrationId is required when publishEnabled is true');
     }
 
     const publishResult = await publishContent({
@@ -118,6 +136,7 @@ export async function contentFactoryWorkflow(input: ContentFactoryInput) {
       status: 'completed',
       draftId: draft.id,
       publishResult,
+      videoResult,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'workflow failed';

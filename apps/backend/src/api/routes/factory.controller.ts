@@ -14,6 +14,7 @@ import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.reque
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import {
   FactoryService,
+  StartCreationInput,
   StartFactoryWorkflowInput,
 } from '@gitroom/backend/services/factory/factory.service';
 import { Response } from 'express';
@@ -37,6 +38,53 @@ export class FactoryController {
       idempotencyKey:
         body.idempotencyKey || idempotencyKeyHeader || idempotencyKeyQuery,
     });
+  }
+
+  @Post('/creation/start')
+  async startCreation(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Headers('idempotency-key') idempotencyKeyHeader: string | undefined,
+    @Query('idempotencyKey') idempotencyKeyQuery: string | undefined,
+    @Body() body: Omit<StartCreationInput, 'operatorId'>
+  ) {
+    return this.factory.startCreation(org.id, {
+      ...body,
+      operatorId: user.id,
+      idempotencyKey:
+        body.idempotencyKey || idempotencyKeyHeader || idempotencyKeyQuery,
+    });
+  }
+
+  @Get('/creation/tasks')
+  async getCreationTasks(
+    @GetOrgFromRequest() org: Organization,
+    @Query('limit') limit?: string
+  ) {
+    return this.factory.getCreationTasks(org.id, {
+      limit: Number(limit || 20),
+    });
+  }
+
+  @Get('/creation/tasks/:workflowId')
+  async getCreationTaskDetail(
+    @GetOrgFromRequest() org: Organization,
+    @Param('workflowId') workflowId: string
+  ) {
+    return this.factory.getCreationTaskDetail(org.id, workflowId);
+  }
+
+  @Get('/creation/n8n-workflows')
+  async getCreationN8nWorkflows() {
+    return this.factory.listCreationN8nWorkflows();
+  }
+
+  @Get('/creation/sources')
+  async getCreationSources(
+    @GetOrgFromRequest() org: Organization,
+    @Query('limit') limit?: string
+  ) {
+    return this.factory.getSourceContents(org.id, Number(limit || 80));
   }
 
   @Get('/workflows/:workflowId')

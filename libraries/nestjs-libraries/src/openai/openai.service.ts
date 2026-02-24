@@ -50,40 +50,63 @@ async function generateImageWithWanx(prompt: string, size = '1024*1024'): Promis
   // The test script used 1280*1280 which worked? No, test script used 1280*1280 but the comment said 1024*1024.
   // Actually test script output shows 1280*1280 in parameters.
 
-  const response = await fetch(WANX_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-      'X-DashScope-Async': 'enable', // Enable async mode to avoid timeouts
+  const requestBody = JSON.stringify({
+    model: WANX_MODEL,
+    input: {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              text: prompt,
+            },
+          ],
+        },
+      ],
     },
-    body: JSON.stringify({
-      model: WANX_MODEL,
-      input: {
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-      },
-      parameters: {
-        size: size,
-        n: 1,
-        prompt_extend: true,
-        watermark: false,
-      },
-    }),
+    parameters: {
+      size: size,
+      n: 1,
+      prompt_extend: true,
+      watermark: false,
+    },
   });
 
+  const callWanx = async (enableAsyncHeader: boolean) => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    };
+    if (enableAsyncHeader) {
+      headers['X-DashScope-Async'] = 'enable';
+    }
+    return fetch(WANX_API_URL, {
+      method: 'POST',
+      headers,
+      body: requestBody,
+    });
+  };
+
+  let response = await callWanx(true);
   if (!response.ok) {
     const errorText = await response.text();
+    const asyncRejected =
+      response.status === 403 &&
+      /asynchronous calls|async/i.test(errorText) &&
+      /AccessDenied/i.test(errorText);
     console.error('[Wanx] API error response:', errorText);
-    throw new Error(`Wanx API error (${response.status}): ${errorText}`);
+
+    if (asyncRejected) {
+      console.warn('[Wanx] Async mode is not allowed for this API key, retrying in sync mode...');
+      response = await callWanx(false);
+      if (!response.ok) {
+        const syncErrorText = await response.text();
+        console.error('[Wanx] Sync fallback error response:', syncErrorText);
+        throw new Error(`Wanx API error (${response.status}): ${syncErrorText}`);
+      }
+    } else {
+      throw new Error(`Wanx API error (${response.status}): ${errorText}`);
+    }
   }
 
   const data = await response.json();
