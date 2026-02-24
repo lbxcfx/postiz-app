@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useToaster } from '@gitroom/react/toaster/toaster';
+import { useVariables } from '@gitroom/react/helpers/variable.context';
+import { useSearchParams } from 'next/navigation';
 
 type SourceContent = {
   id: string;
@@ -115,17 +117,40 @@ type N8nWorkflowOption = {
   description: string | null;
 };
 
+type IntegrationItem = {
+  id: string;
+  name: string;
+  identifier: string;
+  disabled?: boolean;
+};
+
+type ScheduleCreationResult = {
+  ok: boolean;
+  workflowId: string;
+  draftId: string;
+  integrationId: string;
+  mediaType: 'image' | 'video';
+  mediaCount: number;
+  scheduleAt: string;
+  postIds: string[];
+};
+
 export const ContentGenerationConsole = () => {
   const fetcher = useFetch();
   const toaster = useToaster();
+  const { uploadDirectory } = useVariables();
+  const searchParams = useSearchParams();
   const fetcherRef = useRef(fetcher);
+  const scheduleSectionRef = useRef<HTMLDivElement | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
   const [error, setError] = useState('');
   const [sourceContents, setSourceContents] = useState<SourceContent[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [tasks, setTasks] = useState<CreationTask[]>([]);
+  const [xhsIntegrations, setXhsIntegrations] = useState<IntegrationItem[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>('');
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
@@ -148,10 +173,28 @@ export const ContentGenerationConsole = () => {
     n8nWorkflowId: '',
     n8nWebhookUrl: '',
   });
+  const [scheduleForm, setScheduleForm] = useState({
+    scheduleAt: '',
+    mediaType: 'image' as 'image' | 'video',
+    integrationId: '',
+    title: '',
+    tags: '',
+  });
 
   useEffect(() => {
     fetcherRef.current = fetcher;
   }, [fetcher]);
+
+  useEffect(() => {
+    if (scheduleForm.scheduleAt) {
+      return;
+    }
+    const initial = new Date(Date.now() + 30 * 60 * 1000);
+    const local = new Date(initial.getTime() - initial.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16);
+    setScheduleForm((prev) => ({ ...prev, scheduleAt: local }));
+  }, [scheduleForm.scheduleAt]);
 
   const call = useCallback(
     async <T,>(url: string, options?: RequestInit) => {
@@ -169,7 +212,15 @@ export const ContentGenerationConsole = () => {
 
       const parseResponseOrThrow = async (response: Response) => {
         if (response.ok) {
-          return (await response.json()) as T;
+          const text = await response.text();
+          if (!text) {
+            return {} as T;
+          }
+          try {
+            return JSON.parse(text) as T;
+          } catch {
+            return text as unknown as T;
+          }
         }
         let message = `HTTP ${response.status}`;
         try {
@@ -192,14 +243,14 @@ export const ContentGenerationConsole = () => {
       };
 
       let lastNetworkError: Error | null = null;
-      for (let i = 0; i < 3; i += 1) {
+      for (let i = 0; i < 5; i += 1) {
         try {
           const response = await window.fetch(proxyUrl, {
             ...requestInit,
             credentials: 'include',
             cache: 'no-store',
           });
-          if (response.status >= 500 && i < 2) {
+          if (response.status >= 500 && i < 4) {
             await wait(250 * (i + 1));
             continue;
           }
@@ -207,7 +258,7 @@ export const ContentGenerationConsole = () => {
         } catch (error) {
           lastNetworkError =
             error instanceof Error ? error : new Error('Network request failed');
-          if (i < 2) {
+          if (i < 4) {
             await wait(250 * (i + 1));
             continue;
           }
@@ -233,16 +284,49 @@ export const ContentGenerationConsole = () => {
     setLoading(true);
     setError('');
     try {
-      const [sourceResp, taskResp, workflowResp] = await Promise.all([
-        call<{ items: SourceContent[] }>(`/factory/content/paged?page=1&pageSize=40&sortBy=createdAt&sortOrder=desc`),
-        call<{ items: CreationTask[] }>(`/factory/creation/tasks?limit=20`),
-        call<{ items: N8nWorkflowOption[] }>(`/factory/creation/n8n-workflows`).catch(
-          () => ({ items: [] })
+      const failedParts: string[] = [];
+      const [sourceResp, taskResp, workflowResp, integrationResp] = await Promise.all([
+        call<{ items: SourceContent[] }>(
+          `/factory/content/paged?page=1&pageSize=40&sortBy=createdAt&sortOrder=desc`
+        ).catch((reason) => {
+          failedParts.push(
+            reason instanceof Error ? `素材(${reason.message})` : '素材'
+          );
+          return { items: [] as SourceContent[] };
+        }),
+        call<{ items: CreationTask[] }>(`/factory/creation/tasks?limit=20`).catch(
+          (reason) => {
+            failedParts.push(
+              reason instanceof Error ? `任务(${reason.message})` : '任务'
+            );
+            return { items: [] as CreationTask[] };
+          }
         ),
+        call<{ items: N8nWorkflowOption[] }>(`/factory/creation/n8n-workflows`).catch(() => ({
+          items: [] as N8nWorkflowOption[],
+        })),
+        call<{ integrations: IntegrationItem[] }>(`/integrations/list`).catch((reason) => {
+          failedParts.push(
+            reason instanceof Error ? `账号(${reason.message})` : '账号'
+          );
+          return { integrations: [] as IntegrationItem[] };
+        }),
       ]);
       setSourceContents(sourceResp.items || []);
       setTasks(taskResp.items || []);
       setN8nWorkflows(workflowResp.items || []);
+      const xhs = (integrationResp.integrations || []).filter(
+        (item) =>
+          item?.identifier?.toLowerCase().includes('xiaohongshu') && !item.disabled
+      );
+      setXhsIntegrations(xhs);
+      if (!scheduleForm.integrationId && xhs[0]?.id) {
+        setScheduleForm((prev) => ({ ...prev, integrationId: xhs[0].id }));
+      }
+
+      if (failedParts.length > 0) {
+        setError(`部分数据加载失败: ${failedParts.join(' / ')}`);
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Load failed';
       setError(message);
@@ -250,7 +334,7 @@ export const ContentGenerationConsole = () => {
     } finally {
       setLoading(false);
     }
-  }, [call, toaster]);
+  }, [call, scheduleForm.integrationId, toaster]);
 
   useEffect(() => {
     loadData();
@@ -272,6 +356,31 @@ export const ContentGenerationConsole = () => {
       setTaskDetail(null);
     }
   }, [selectedWorkflowId, tasks]);
+
+  useEffect(() => {
+    if (!taskDetail) {
+      return;
+    }
+    const hasImages = taskDetail.preview.images.length > 0;
+    const hasVideos = taskDetail.preview.videos.length > 0;
+    if (!hasImages && !hasVideos) {
+      return;
+    }
+    if (scheduleForm.mediaType === 'video' && !hasVideos && hasImages) {
+      setScheduleForm((prev) => ({ ...prev, mediaType: 'image' }));
+      return;
+    }
+    if (scheduleForm.mediaType === 'image' && !hasImages && hasVideos) {
+      setScheduleForm((prev) => ({ ...prev, mediaType: 'video' }));
+      return;
+    }
+    if (!scheduleForm.title.trim() && taskDetail.draft?.title?.trim()) {
+      setScheduleForm((prev) => ({
+        ...prev,
+        title: taskDetail.draft?.title?.trim() || prev.title,
+      }));
+    }
+  }, [scheduleForm.mediaType, scheduleForm.title, taskDetail]);
 
   const filteredSources = useMemo(() => {
     return sourceContents.filter((item) => {
@@ -347,21 +456,44 @@ export const ContentGenerationConsole = () => {
   }, []);
 
   const toMediaSrc = useCallback((path: string) => {
-    const normalized = String(path || '').trim();
+    const normalized = String(path || '').trim().replace(/\\/g, '/');
     if (!normalized) return '';
     if (/^https?:\/\//i.test(normalized)) return normalized;
+
+    const uploadPrefix = String(uploadDirectory || 'uploads')
+      .replace(/\\/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    const uploadRoot = `/${uploadPrefix}`;
+    const fromRoot = (suffix: string) =>
+      `${uploadRoot}/${suffix.replace(/^\/+/, '')}`;
+
     if (normalized.startsWith('local:')) {
-      return `/uploads/${normalized.slice('local:'.length)}`;
+      return fromRoot(normalized.slice('local:'.length));
     }
     if (normalized.startsWith('materials/')) {
-      return `/uploads/${normalized.slice('materials/'.length)}`;
+      return fromRoot(normalized.slice('materials/'.length));
     }
     if (normalized.startsWith('/materials/')) {
-      return `/uploads/${normalized.slice('/materials/'.length)}`;
+      return fromRoot(normalized.slice('/materials/'.length));
     }
+    if (normalized.startsWith(`${uploadPrefix}/`)) {
+      return `/${normalized}`;
+    }
+    if (normalized.startsWith(`/${uploadPrefix}/`)) {
+      return normalized;
+    }
+
+    if (/^[a-zA-Z]:\//.test(normalized)) {
+      const lower = normalized.toLowerCase();
+      const marker = lower.lastIndexOf(`/${uploadPrefix.toLowerCase()}/`);
+      if (marker >= 0) {
+        return fromRoot(normalized.slice(marker + uploadPrefix.length + 2));
+      }
+    }
+
     if (normalized.startsWith('/')) return normalized;
     return `/${normalized}`;
-  }, []);
+  }, [uploadDirectory]);
 
   const loadTaskDetail = useCallback(
     async (workflowId: string) => {
@@ -382,6 +514,23 @@ export const ContentGenerationConsole = () => {
     },
     [call]
   );
+
+  useEffect(() => {
+    if (searchParams.get('schedule') !== '1') {
+      return;
+    }
+    if (!selectedWorkflowId && tasks[0]?.workflowId) {
+      loadTaskDetail(tasks[0].workflowId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      scheduleSectionRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [loadTaskDetail, searchParams, selectedWorkflowId, tasks]);
 
   const reviewSelectedTask = useCallback(
     async (decision: 'approve' | 'reject') => {
@@ -434,6 +583,58 @@ export const ContentGenerationConsole = () => {
       setActioning('');
     }
   }, [call, loadData, loadTaskDetail, taskDetail, toaster]);
+
+  const scheduleSelectedTask = useCallback(async () => {
+    if (!taskDetail?.workflowId) {
+      toaster.show('请先选择任务', 'warning');
+      return;
+    }
+    if (!scheduleForm.integrationId) {
+      toaster.show('请选择小红书发布账号', 'warning');
+      return;
+    }
+    const scheduleAtLocal = String(scheduleForm.scheduleAt || '').trim();
+    if (!scheduleAtLocal) {
+      toaster.show('请选择发布时间', 'warning');
+      return;
+    }
+    const scheduleAt = new Date(scheduleAtLocal);
+    if (Number.isNaN(scheduleAt.getTime())) {
+      toaster.show('发布时间格式不正确', 'warning');
+      return;
+    }
+
+    setScheduling(true);
+    try {
+      const tags = scheduleForm.tags
+        .split(/[,\n，、]/g)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const result = await call<ScheduleCreationResult>(
+        `/factory/creation/tasks/${taskDetail.workflowId}/schedule`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            scheduleAt: scheduleAt.toISOString(),
+            mediaType: scheduleForm.mediaType,
+            integrationId: scheduleForm.integrationId,
+            title: scheduleForm.title.trim() || undefined,
+            tags,
+          }),
+        }
+      );
+      toaster.show(
+        `已定时发送到小红书（${result.mediaType} ${result.mediaCount} 个素材）`,
+        'success'
+      );
+      await Promise.all([loadData(), loadTaskDetail(taskDetail.workflowId)]);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Schedule failed';
+      toaster.show(message, 'warning');
+    } finally {
+      setScheduling(false);
+    }
+  }, [call, loadData, loadTaskDetail, scheduleForm, taskDetail, toaster]);
 
   return (
     <div className="bg-newBgColorInner p-[20px] flex flex-1 flex-col gap-[16px] transition-all">
@@ -848,6 +1049,116 @@ export const ContentGenerationConsole = () => {
                 >
                   打开视频库
                 </a>
+              </div>
+            </div>
+
+            <div
+              id="creation-schedule"
+              ref={scheduleSectionRef}
+              className="rounded-[8px] border border-tableBorder p-[10px]"
+            >
+              <div className="text-[13px] font-semibold text-textColor mb-[8px]">
+                日历定时发送到小红书
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-[10px]">
+                <div>
+                  <div className="text-[12px] mb-[4px] text-textColor/70">发布时间</div>
+                  <input
+                    type="datetime-local"
+                    className="w-full bg-sixth border border-tableBorder rounded-[6px] px-[10px] py-[7px] text-[13px]"
+                    value={scheduleForm.scheduleAt}
+                    onChange={(e) =>
+                      setScheduleForm((prev) => ({ ...prev, scheduleAt: e.target.value }))
+                    }
+                  />
+                </div>
+                <div>
+                  <div className="text-[12px] mb-[4px] text-textColor/70">素材类型</div>
+                  <select
+                    className="w-full bg-sixth border border-tableBorder rounded-[6px] px-[10px] py-[7px] text-[13px]"
+                    value={scheduleForm.mediaType}
+                    onChange={(e) =>
+                      setScheduleForm((prev) => ({
+                        ...prev,
+                        mediaType: e.target.value as 'image' | 'video',
+                      }))
+                    }
+                  >
+                    <option value="image" disabled={taskDetail.preview.images.length === 0}>
+                      图文（{taskDetail.preview.images.length}）
+                    </option>
+                    <option value="video" disabled={taskDetail.preview.videos.length === 0}>
+                      视频（{taskDetail.preview.videos.length}）
+                    </option>
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[12px] mb-[4px] text-textColor/70">发布账号（小红书）</div>
+                  <select
+                    className="w-full bg-sixth border border-tableBorder rounded-[6px] px-[10px] py-[7px] text-[13px]"
+                    value={scheduleForm.integrationId}
+                    onChange={(e) =>
+                      setScheduleForm((prev) => ({ ...prev, integrationId: e.target.value }))
+                    }
+                  >
+                    <option value="">请选择账号</option>
+                    {xhsIntegrations.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} ({item.identifier})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[12px] mb-[4px] text-textColor/70">标题（可选）</div>
+                  <input
+                    className="w-full bg-sixth border border-tableBorder rounded-[6px] px-[10px] py-[7px] text-[13px]"
+                    value={scheduleForm.title}
+                    onChange={(e) =>
+                      setScheduleForm((prev) => ({ ...prev, title: e.target.value }))
+                    }
+                    placeholder="默认使用草稿标题（20字以内）"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <div className="text-[12px] mb-[4px] text-textColor/70">
+                    话题标签（可选，逗号分隔）
+                  </div>
+                  <input
+                    className="w-full bg-sixth border border-tableBorder rounded-[6px] px-[10px] py-[7px] text-[13px]"
+                    value={scheduleForm.tags}
+                    onChange={(e) =>
+                      setScheduleForm((prev) => ({ ...prev, tags: e.target.value }))
+                    }
+                    placeholder="美妆, 护肤, 评测"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-[10px] flex flex-wrap items-center gap-[8px]">
+                <button
+                  className="bg-primary text-white rounded-[6px] px-[12px] py-[7px] text-[12px] disabled:opacity-60"
+                  disabled={
+                    scheduling ||
+                    !scheduleForm.integrationId ||
+                    (!taskDetail.preview.images.length &&
+                      !taskDetail.preview.videos.length)
+                  }
+                  onClick={scheduleSelectedTask}
+                >
+                  {scheduling ? '提交中...' : '定时发送到小红书'}
+                </button>
+                <a
+                  href="/launches"
+                  className="bg-sixth border border-tableBorder rounded-[6px] px-[12px] py-[7px] text-[12px]"
+                >
+                  打开日历
+                </a>
+                {xhsIntegrations.length === 0 ? (
+                  <span className="text-[12px] text-amber-500">
+                    未检测到可用的小红书账号，请先在 Integrations 连接。
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>

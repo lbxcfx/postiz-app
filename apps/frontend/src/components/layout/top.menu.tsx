@@ -5,6 +5,7 @@ import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
+import { usePathname } from 'next/navigation';
 
 interface MenuItemInterface {
   name: string;
@@ -18,6 +19,7 @@ interface MenuItemInterface {
 export const useMenuItem = () => {
   const { isGeneral } = useVariables();
   const t = useT();
+  const pathname = usePathname();
 
   const firstMenu = [
     {
@@ -98,6 +100,18 @@ export const useMenuItem = () => {
       path: '/insights',
     },
     {
+      name: t('factory_creation', 'Creation'),
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <path d="M5 7.5C5 6.11929 6.11929 5 7.5 5H12.5C13.8807 5 15 6.11929 15 7.5V12.5C15 13.8807 13.8807 15 12.5 15H7.5C6.11929 15 5 13.8807 5 12.5V7.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+          <path d="M10 15V19" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          <path d="M8 19H12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          <path d="M17 9L18 11L20 12L18 13L17 15L16 13L14 12L16 11L17 9Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        </svg>
+      ),
+      path: '/creation',
+    },
+    {
       name: t('factory_generate', 'Generate'),
       icon: (
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
@@ -144,7 +158,7 @@ export const useMenuItem = () => {
           />
         </svg>
       ),
-      path: '/launches',
+      path: pathname.startsWith('/creation') ? '/creation?schedule=1' : '/launches',
     },
     {
       name: 'Agent',

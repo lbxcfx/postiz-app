@@ -74,6 +74,30 @@ export class FactoryController {
     return this.factory.getCreationTaskDetail(org.id, workflowId);
   }
 
+  @Post('/creation/tasks/:workflowId/schedule')
+  async scheduleCreationTask(
+    @GetOrgFromRequest() org: Organization,
+    @GetUserFromRequest() user: User,
+    @Param('workflowId') workflowId: string,
+    @Body()
+    body: {
+      scheduleAt: string;
+      mediaType?: 'image' | 'video';
+      integrationId?: string;
+      title?: string;
+      tags?: string[];
+    }
+  ) {
+    return this.factory.scheduleCreationTask(org.id, workflowId, {
+      operatorId: user.id,
+      scheduleAt: body.scheduleAt,
+      mediaType: body.mediaType,
+      integrationId: body.integrationId,
+      title: body.title,
+      tags: body.tags,
+    });
+  }
+
   @Get('/creation/n8n-workflows')
   async getCreationN8nWorkflows() {
     return this.factory.listCreationN8nWorkflows();

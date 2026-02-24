@@ -6,6 +6,7 @@ import { organizationId } from '@gitroom/nestjs-libraries/temporal/temporal.sear
 import { ReviewStatus } from '@prisma/client';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 import { createHash } from 'crypto';
 
 export type StartFactoryWorkflowInput = {
@@ -66,7 +67,8 @@ export class FactoryService {
     private readonly prisma: PrismaService,
     private readonly temporal: TemporalService,
     private readonly integrationService: IntegrationService,
-    private readonly integrationManager: IntegrationManager
+    private readonly integrationManager: IntegrationManager,
+    private readonly postsService: PostsService
   ) {}
 
   private badRequest(code: string, message: string): BadRequestException {
@@ -140,12 +142,45 @@ export class FactoryService {
   }
 
   private normalizeMediaPath(pathValue: string) {
-    if (!pathValue) return '';
-    if (/^https?:\/\//i.test(pathValue)) return pathValue;
-    if (pathValue.startsWith('local:')) {
-      return `materials/${pathValue.replace('local:', '')}`;
+    if (!pathValue) {
+      return '';
     }
-    return pathValue;
+    const normalized = String(pathValue).trim().replace(/\\/g, '/');
+    if (!normalized) {
+      return '';
+    }
+    if (/^https?:\/\//i.test(normalized)) {
+      return normalized;
+    }
+    if (normalized.startsWith('local:')) {
+      return `materials/${normalized
+        .replace(/^local:/, '')
+        .replace(/^\/+/, '')
+        .replace(/\\/g, '/')}`;
+    }
+
+    const uploadDirectory = (process.env.UPLOAD_DIRECTORY || '')
+      .replace(/\\/g, '/')
+      .replace(/\/+$/, '');
+    if (uploadDirectory && normalized.startsWith(`${uploadDirectory}/`)) {
+      return normalized
+        .slice(uploadDirectory.length)
+        .replace(/^\/+/, '')
+        .replace(/\\/g, '/');
+    }
+
+    if (/^[a-zA-Z]:\//.test(normalized)) {
+      const lower = normalized.toLowerCase();
+      const materialIndex = lower.lastIndexOf('/materials/');
+      if (materialIndex >= 0) {
+        return normalized.slice(materialIndex + 1);
+      }
+      const uploadIndex = lower.lastIndexOf('/uploads/');
+      if (uploadIndex >= 0) {
+        return normalized.slice(uploadIndex + 1);
+      }
+    }
+    return normalized.replace(/^\/+/, '');
   }
 
   private inferMediaType(pathValue: string): 'image' | 'video' {
@@ -1036,6 +1071,268 @@ export class FactoryService {
         canRegenerate: canReview,
         canDiscard: canReview,
       },
+    };
+  }
+
+  async scheduleCreationTask(
+    orgId: string,
+    workflowId: string,
+    input: {
+      operatorId: string;
+      scheduleAt: string;
+      mediaType?: 'image' | 'video';
+      integrationId?: string;
+      title?: string;
+      tags?: string[];
+    }
+  ) {
+    const scheduleAtRaw = String(input.scheduleAt || '').trim();
+    const scheduleAt = new Date(scheduleAtRaw);
+    if (!scheduleAtRaw || Number.isNaN(scheduleAt.getTime())) {
+      throw this.badRequest(
+        'FACTORY_SCHEDULE_TIME_INVALID',
+        'scheduleAt must be a valid datetime'
+      );
+    }
+    if (scheduleAt.getTime() <= Date.now()) {
+      throw this.badRequest(
+        'FACTORY_SCHEDULE_TIME_INVALID',
+        'scheduleAt must be in the future'
+      );
+    }
+
+    const draft = await this.prisma.contentDraft.findFirst({
+      where: {
+        organizationId: orgId,
+        workflowId,
+        deletedAt: null,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        title: true,
+        content: true,
+        sourceContentIds: true,
+      },
+    });
+    if (!draft) {
+      throw this.notFound(
+        'FACTORY_CREATION_TASK_NOT_FOUND',
+        'Creation task not found'
+      );
+    }
+
+    const content = String(draft.content || '').trim();
+    if (!content) {
+      throw this.badRequest(
+        'FACTORY_DRAFT_CONTENT_EMPTY',
+        'Draft content is empty, cannot schedule publish'
+      );
+    }
+
+    let integration = null as Awaited<
+      ReturnType<IntegrationService['getIntegrationById']>
+    > | null;
+    const requestedIntegrationId = String(input.integrationId || '').trim();
+    if (requestedIntegrationId) {
+      integration = await this.integrationService.getIntegrationById(
+        orgId,
+        requestedIntegrationId
+      );
+      if (!integration) {
+        throw this.notFound('FACTORY_INTEGRATION_NOT_FOUND', 'Integration not found');
+      }
+    } else {
+      const integrations = await this.integrationService.getIntegrationsList(orgId);
+      integration =
+        integrations.find(
+          (item) =>
+            !item.disabled && this.requiresMediaPrecheck(item.providerIdentifier)
+        ) || null;
+    }
+
+    if (!integration) {
+      throw this.badRequest(
+        'FACTORY_XHS_INTEGRATION_REQUIRED',
+        'No available xiaohongshu integration found'
+      );
+    }
+    if (integration.disabled) {
+      throw this.badRequest('FACTORY_INTEGRATION_DISABLED', 'Integration is disabled');
+    }
+    if (!this.requiresMediaPrecheck(integration.providerIdentifier)) {
+      throw this.badRequest(
+        'FACTORY_INTEGRATION_NOT_XHS',
+        'Only xiaohongshu integration is supported for creation scheduling'
+      );
+    }
+
+    const [generateLog, videoLogs] = await Promise.all([
+      this.prisma.auditLog.findFirst({
+        where: {
+          organizationId: orgId,
+          action: 'generate',
+          resourceType: 'draft',
+          resourceId: draft.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          detail: true,
+        },
+      }),
+      this.prisma.auditLog.findMany({
+        where: {
+          organizationId: orgId,
+          action: 'generate_video',
+          resourceType: 'draft',
+          resourceId: draft.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+        select: {
+          detail: true,
+        },
+      }),
+    ]);
+
+    const generateDetail = (generateLog?.detail || {}) as Record<string, any>;
+    const generatedImages = (generateDetail.generatedImages || {}) as Record<string, any>;
+    const imageAssets = Array.isArray(generatedImages.assets)
+      ? generatedImages.assets
+          .map((item) => this.normalizeGeneratedMediaAsset(item))
+          .filter(
+            (item): item is { id: string; path: string; type: 'image' | 'video' } =>
+              Boolean(item)
+          )
+      : [];
+    const videoAssets = videoLogs
+      .map((log) => {
+        const detail = (log.detail || {}) as Record<string, any>;
+        return this.normalizeGeneratedMediaAsset({
+          id: detail.mediaId,
+          path: detail.mediaPath,
+        });
+      })
+      .filter(
+        (item): item is { id: string; path: string; type: 'image' | 'video' } =>
+          Boolean(item)
+      );
+
+    const mediaType = input.mediaType === 'video' ? 'video' : 'image';
+    const preferredMedia = (mediaType === 'video' ? videoAssets : imageAssets).filter(
+      (item) => item.type === mediaType
+    );
+
+    const sourceContentIds = this.parseSourceContentIds(draft.sourceContentIds);
+    const fallbackRawAssets = sourceContentIds.length
+      ? await this.prisma.mediaAsset.findMany({
+          where: {
+            sourceContentId: { in: sourceContentIds },
+            type: mediaType,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: mediaType === 'video' ? 1 : 12,
+          select: {
+            id: true,
+            url: true,
+            localPath: true,
+          },
+        })
+      : [];
+    const fallbackMedia = this.buildPostMedia(
+      fallbackRawAssets.map((asset) => ({
+        id: asset.id,
+        url: asset.url || '',
+        localPath: asset.localPath,
+      }))
+    ).filter((item) => item.type === mediaType);
+
+    const selectedMediaRaw = preferredMedia.length > 0 ? preferredMedia : fallbackMedia;
+    const selectedMedia = Array.from(
+      new Map(
+        selectedMediaRaw.map((item) => [
+          item.path,
+          {
+            id: item.id,
+            path: item.path,
+          },
+        ])
+      ).values()
+    ).slice(0, mediaType === 'video' ? 1 : 12);
+
+    if (selectedMedia.length === 0) {
+      throw this.badRequest(
+        'FACTORY_MEDIA_REQUIRED',
+        `No ${mediaType} assets available for scheduling`
+      );
+    }
+
+    const tags = Array.from(
+      new Set(
+        (Array.isArray(input.tags) ? input.tags : [])
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 12);
+    const title = String(input.title || draft.title || '内容发布')
+      .trim()
+      .slice(0, 20);
+    const mapped = await this.postsService.mapTypeToPost(
+      {
+        type: 'schedule',
+        shortLink: false,
+        date: scheduleAt.toISOString(),
+        tags: [],
+        posts: [
+          {
+            integration: {
+              id: integration.id,
+            },
+            value: [
+              {
+                content,
+                image: selectedMedia,
+              },
+            ],
+            settings: {
+              title,
+              tags,
+              scheduled_time: scheduleAt.toISOString(),
+            },
+          },
+        ],
+      } as any,
+      orgId
+    );
+    const created = await this.postsService.createPost(orgId, mapped);
+
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: orgId,
+        operator: input.operatorId,
+        action: 'creation_schedule',
+        resourceType: 'workflow',
+        resourceId: workflowId,
+        detail: {
+          draftId: draft.id,
+          integrationId: integration.id,
+          mediaType,
+          mediaCount: selectedMedia.length,
+          scheduleAt: scheduleAt.toISOString(),
+          postIds: created.map((item) => item.postId),
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      workflowId,
+      draftId: draft.id,
+      integrationId: integration.id,
+      mediaType,
+      mediaCount: selectedMedia.length,
+      scheduleAt: scheduleAt.toISOString(),
+      postIds: created.map((item) => item.postId),
     };
   }
 

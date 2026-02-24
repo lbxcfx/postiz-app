@@ -10,7 +10,8 @@ export const MenuItem: FC<{ label: string; icon: ReactNode; path: string }> = ({
   path,
 }) => {
   const currentPath = usePathname();
-  const isActive = currentPath.indexOf(path) === 0;
+  const normalizedPath = path.split('?')[0].split('#')[0];
+  const isActive = currentPath.indexOf(normalizedPath) === 0;
 
   return (
     <Link

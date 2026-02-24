@@ -27,12 +27,17 @@ describe('FactoryService retry history', () => {
     const integrationManager = {
       getSocialIntegration: jest.fn(),
     };
+    const postsService = {
+      mapTypeToPost: jest.fn(),
+      createPost: jest.fn(),
+    };
 
     const service = new FactoryService(
       prisma as any,
       temporal as any,
       integrationService as any,
-      integrationManager as any
+      integrationManager as any,
+      postsService as any
     );
 
     return { service, prisma };
@@ -260,12 +265,17 @@ describe('FactoryService retry history', () => {
     const integrationManager = {
       getSocialIntegration: jest.fn().mockReturnValue(provider),
     };
+    const postsService = {
+      mapTypeToPost: jest.fn(),
+      createPost: jest.fn(),
+    };
 
     const service = new FactoryService(
       prisma as any,
       temporal as any,
       integrationService as any,
-      integrationManager as any
+      integrationManager as any,
+      postsService as any
     );
 
     await expect(service.retryPublishJob('org-1', 'job-1', 'operator-1')).rejects.toMatchObject({
