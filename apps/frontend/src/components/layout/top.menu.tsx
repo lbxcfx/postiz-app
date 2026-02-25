@@ -61,45 +61,6 @@ export const useMenuItem = () => {
       path: '/materials',
     },
     {
-      name: t('factory_dashboard', 'Dashboard'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M4 13H10V20H4V13ZM14 4H20V20H14V4ZM4 4H10V10H4V4Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        </svg>
-      ),
-      path: '/dashboard',
-    },
-    {
-      name: t('factory_tasks', 'Tasks'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M8 7H20M8 12H20M8 17H20M4 7H4.01M4 12H4.01M4 17H4.01" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      ),
-      path: '/tasks',
-    },
-    {
-      name: t('factory_content', 'Content'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M6 4H18C19.1046 4 20 4.89543 20 6V18C20 19.1046 19.1046 20 18 20H6C4.89543 20 4 19.1046 4 18V6C4 4.89543 4.89543 4 6 4Z" stroke="currentColor" strokeWidth="1.6" />
-          <path d="M8 9H16M8 13H16M8 17H12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      ),
-      path: '/content',
-    },
-    {
-      name: t('factory_insights', 'Insights'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M4 18L9 13L13 16L20 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M20 12V8H16" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M4 6H10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      ),
-      path: '/insights',
-    },
-    {
       name: t('factory_creation', 'Creation'),
       icon: (
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
@@ -110,94 +71,6 @@ export const useMenuItem = () => {
         </svg>
       ),
       path: '/creation',
-    },
-    {
-      name: t('factory_generate', 'Generate'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M12 3L14.8 9.2L21 12L14.8 14.8L12 21L9.2 14.8L3 12L9.2 9.2L12 3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        </svg>
-      ),
-      path: '/generate',
-    },
-    {
-      name: t('factory_publish', 'Publish'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M4 12L20 4L14 20L11 13L4 12Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        </svg>
-      ),
-      path: '/publish',
-    },
-    {
-      name: t('factory_logs', 'Logs'),
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <path d="M4 5H20V19H4V5Z" stroke="currentColor" strokeWidth="1.6" />
-          <path d="M8 9H16M8 13H16M8 17H13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      ),
-      path: '/logs',
-    },
-    {
-      name: isGeneral ? t('calendar', 'Calendar') : t('launches', 'Launches'),
-      icon: (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="21"
-          height="23"
-          viewBox="0 0 21 23"
-          fill="none"
-        >
-          <path
-            d="M19.5 9.5H1.5M14.5 1.5V5.5M6.5 1.5V5.5M6.3 21.5H14.7C16.3802 21.5 17.2202 21.5 17.862 21.173C18.4265 20.8854 18.8854 20.4265 19.173 19.862C19.5 19.2202 19.5 18.3802 19.5 16.7V8.3C19.5 6.61984 19.5 5.77976 19.173 5.13803C18.8854 4.57354 18.4265 4.1146 17.862 3.82698C17.2202 3.5 16.3802 3.5 14.7 3.5H6.3C4.61984 3.5 3.77976 3.5 3.13803 3.82698C2.57354 4.1146 2.1146 4.57354 1.82698 5.13803C1.5 5.77976 1.5 6.61984 1.5 8.3V16.7C1.5 18.3802 1.5 19.2202 1.82698 19.862C2.1146 20.4265 2.57354 20.8854 3.13803 21.173C3.77976 21.5 4.61984 21.5 6.3 21.5Z"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ),
-      path: pathname.startsWith('/creation') ? '/creation?schedule=1' : '/launches',
-    },
-    {
-      name: 'Agent',
-      icon: (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="23"
-          height="23"
-          viewBox="0 0 32 32"
-          fill="none"
-        >
-          <path
-            d="M21.1963 9.07375C20.2913 6.95494 18.6824 5.21364 16.6416 4.14422C14.6009 3.0748 12.2534 2.74287 9.99616 3.20455C7.73891 3.66623 5.71031 4.8932 4.25334 6.67802C2.79637 8.46284 2.0004 10.696 2 13V21.25C2 21.7141 2.18437 22.1592 2.51256 22.4874C2.84075 22.8156 3.28587 23 3.75 23H10.8337C11.6141 24.7821 12.8964 26.2984 14.5241 27.3638C16.1519 28.4293 18.0546 28.9978 20 29H28.25C28.7141 29 29.1592 28.8156 29.4874 28.4874C29.8156 28.1592 30 27.7141 30 27.25V19C29.9995 16.5553 29.1036 14.1955 27.4814 12.3666C25.8593 10.5376 23.6234 9.36619 21.1963 9.07375ZM4 13C4 11.4177 4.46919 9.87103 5.34824 8.55544C6.22729 7.23984 7.47672 6.21446 8.93853 5.60896C10.4003 5.00346 12.0089 4.84504 13.5607 5.15372C15.1126 5.4624 16.538 6.22432 17.6569 7.34314C18.7757 8.46197 19.5376 9.88743 19.8463 11.4393C20.155 12.9911 19.9965 14.5997 19.391 16.0615C18.7855 17.5233 17.7602 18.7727 16.4446 19.6518C15.129 20.5308 13.5823 21 12 21H4V13ZM28 27H20C18.5854 26.9984 17.1964 26.6225 15.974 25.9106C14.7516 25.1986 13.7394 24.1759 13.04 22.9463C14.4096 22.8041 15.7351 22.3804 16.9333 21.7017C18.1314 21.023 19.1763 20.104 20.0024 19.0023C20.8284 17.9006 21.4179 16.6401 21.7337 15.2998C22.0495 13.9595 22.0848 12.5684 21.8375 11.2137C23.5916 11.6277 25.1545 12.6218 26.273 14.035C27.3915 15.4482 28 17.1977 28 19V27Z"
-            fill="currentColor"
-          />
-        </svg>
-      ),
-      path: '/agents',
-    },
-    {
-      name: t('analytics', 'Analytics'),
-      icon: (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="20"
-          height="19"
-          viewBox="0 0 20 19"
-          fill="none"
-        >
-          <path
-            d="M18.5 18H3.01111C2.48217 18 2.2177 18 2.01568 17.8971C1.83797 17.8065 1.69349 17.662 1.60294 17.4843C1.5 17.2823 1.5 17.0178 1.5 16.4889V1M18.5 4.77778L13.3676 9.91019C13.1806 10.0972 13.0871 10.1907 12.9793 10.2257C12.8844 10.2565 12.7823 10.2565 12.6874 10.2257C12.5796 10.1907 12.4861 10.0972 12.2991 9.91019L10.5343 8.14537C10.3472 7.95836 10.2537 7.86486 10.1459 7.82982C10.0511 7.79901 9.94892 7.79901 9.85407 7.82982C9.74625 7.86486 9.65275 7.95836 9.46574 8.14537L5.27778 12.3333M18.5 4.77778H14.7222M18.5 4.77778V8.55556"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ),
-      path: '/analytics',
     },
     {
       name: t('media', 'Media'),
@@ -221,108 +94,49 @@ export const useMenuItem = () => {
       path: '/media',
     },
     {
-      name: t('plugs', 'Plugs'),
+      name: isGeneral ? t('calendar', 'Calendar') : t('launches', 'Launches'),
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="19"
-          viewBox="0 0 18 19"
+          width="21"
+          height="23"
+          viewBox="0 0 21 23"
           fill="none"
         >
           <path
-            d="M11.6711 6.21205C11.3397 5.88068 11.174 5.715 11.1119 5.52395C11.0573 5.35589 11.0573 5.17486 11.1119 5.00681C11.174 4.81575 11.3397 4.65007 11.6711 4.3187L14.0461 1.94369C13.4158 1.65867 12.7162 1.5 11.9795 1.5C9.20677 1.5 6.95901 3.74776 6.95901 6.5205C6.95901 6.93138 7.00837 7.33073 7.10148 7.71294C7.20119 8.12224 7.25104 8.32689 7.24219 8.45618C7.23292 8.59154 7.21274 8.66355 7.15032 8.78401C7.0907 8.89907 6.97646 9.0133 6.748 9.24177L1.52013 14.4696C0.826947 15.1628 0.826948 16.2867 1.52013 16.9799C2.21332 17.6731 3.3372 17.6731 4.03039 16.9799L9.25825 11.752C9.48672 11.5236 9.60095 11.4093 9.71601 11.3497C9.83647 11.2873 9.90848 11.2671 10.0438 11.2578C10.1731 11.249 10.3778 11.2988 10.7871 11.3985C11.1693 11.4916 11.5686 11.541 11.9795 11.541C14.7523 11.541 17 9.29325 17 6.5205C17 5.78382 16.8413 5.0842 16.5563 4.45394L14.1813 6.82895C13.8499 7.16032 13.6843 7.326 13.4932 7.38808C13.3252 7.44269 13.1441 7.44269 12.9761 7.38808C12.785 7.326 12.6193 7.16032 12.288 6.82895L11.6711 6.21205Z"
+            d="M19.5 9.5H1.5M14.5 1.5V5.5M6.5 1.5V5.5M6.3 21.5H14.7C16.3802 21.5 17.2202 21.5 17.862 21.173C18.4265 20.8854 18.8854 20.4265 19.173 19.862C19.5 19.2202 19.5 18.3802 19.5 16.7V8.3C19.5 6.61984 19.5 5.77976 19.173 5.13803C18.8854 4.57354 18.4265 4.1146 17.862 3.82698C17.2202 3.5 16.3802 3.5 14.7 3.5H6.3C4.61984 3.5 3.77976 3.5 3.13803 3.82698C2.57354 4.1146 2.1146 4.57354 1.82698 5.13803C1.5 5.77976 1.5 6.61984 1.5 8.3V16.7C1.5 18.3802 1.5 19.2202 1.82698 19.862C2.1146 20.4265 2.57354 20.8854 3.13803 21.173C3.77976 21.5 4.61984 21.5 6.3 21.5Z"
             stroke="currentColor"
-            strokeWidth="1.5"
+            strokeWidth="1.8"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
         </svg>
       ),
-      path: '/plugs',
+      path: pathname.startsWith('/creation') ? '/creation?schedule=1' : '/launches',
     },
     {
-      name: t('integrations', 'Integrations'),
+      name: t('factory_analysis', 'Analysis'),
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
-          width="20"
-          height="19"
-          viewBox="0 0 20 19"
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
           fill="none"
         >
           <path
-            d="M6.175 3.125C6.175 1.9514 7.1264 1 8.3 1C9.47361 1 10.425 1.9514 10.425 3.125V4.4H11.275C12.4632 4.4 13.0572 4.4 13.5258 4.59411C14.1507 4.85292 14.6471 5.34934 14.9059 5.97416C15.1 6.44277 15.1 7.03685 15.1 8.225H16.375C17.5486 8.225 18.5 9.1764 18.5 10.35C18.5 11.5236 17.5486 12.475 16.375 12.475H15.1V13.92C15.1 15.3481 15.1 16.0622 14.8221 16.6077C14.5776 17.0875 14.1875 17.4776 13.7077 17.7221C13.1622 18 12.4481 18 11.02 18H10.425V16.5125C10.425 15.4563 9.56874 14.6 8.5125 14.6C7.45626 14.6 6.6 15.4563 6.6 16.5125V18H5.58C4.15187 18 3.4378 18 2.89232 17.7221C2.41251 17.4776 2.02241 17.0875 1.77793 16.6077C1.5 16.0622 1.5 15.3481 1.5 13.92V12.475H2.775C3.94861 12.475 4.9 11.5236 4.9 10.35C4.9 9.1764 3.94861 8.225 2.775 8.225H1.5C1.5 7.03685 1.5 6.44277 1.69411 5.97416C1.95292 5.34934 2.44934 4.85292 3.07416 4.59411C3.54277 4.4 4.13685 4.4 5.325 4.4H6.175V3.125Z"
+            d="M4 13H10V20H4V13ZM14 4H20V20H14V4ZM4 4H10V10H4V4Z"
             stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
+            strokeWidth="1.6"
             strokeLinejoin="round"
           />
         </svg>
       ),
-      path: '/third-party',
+      path: '/dashboard',
     },
   ] satisfies MenuItemInterface[] as MenuItemInterface[];
 
   const secondMenu = [
-    {
-      name: t('affiliate', 'Affiliate'),
-      icon: (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="20"
-          height="21"
-          viewBox="0 0 20 21"
-          fill="none"
-        >
-          <path
-            d="M15.0004 6.467C14.9504 6.45866 14.8921 6.45866 14.8421 6.467C13.6921 6.42533 12.7754 5.48366 12.7754 4.31699C12.7754 3.12533 13.7337 2.16699 14.9254 2.16699C16.1171 2.16699 17.0754 3.13366 17.0754 4.31699C17.0671 5.48366 16.1504 6.42533 15.0004 6.467Z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M14.1419 12.5338C15.2836 12.7255 16.5419 12.5255 17.4253 11.9338C18.6003 11.1505 18.6003 9.86713 17.4253 9.08379C16.5336 8.49213 15.2586 8.29212 14.1169 8.49212"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M4.97466 6.467C5.02466 6.45866 5.08299 6.45866 5.13299 6.467C6.28299 6.42533 7.19966 5.48366 7.19966 4.31699C7.19966 3.12533 6.24133 2.16699 5.04966 2.16699C3.85799 2.16699 2.89966 3.13366 2.89966 4.31699C2.90799 5.48366 3.82466 6.42533 4.97466 6.467Z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M5.83304 12.5338C4.69137 12.7255 3.43304 12.5255 2.54971 11.9338C1.37471 11.1505 1.37471 9.86713 2.54971 9.08379C3.44137 8.49213 4.71637 8.29212 5.85804 8.49212"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M10.0001 12.6916C9.95014 12.6833 9.89181 12.6833 9.84181 12.6916C8.69181 12.6499 7.77515 11.7083 7.77515 10.5416C7.77515 9.34994 8.73348 8.3916 9.92514 8.3916C11.1168 8.3916 12.0751 9.35827 12.0751 10.5416C12.0668 11.7083 11.1501 12.6583 10.0001 12.6916Z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M7.5751 15.3158C6.4001 16.0992 6.4001 17.3825 7.5751 18.1658C8.90843 19.0575 11.0918 19.0575 12.4251 18.1658C13.6001 17.3825 13.6001 16.0992 12.4251 15.3158C11.1001 14.4325 8.90843 14.4325 7.5751 15.3158Z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ),
-      path: 'https://affiliate.postiz.com',
-      role: ['ADMIN', 'SUPERADMIN', 'USER'],
-      requireBilling: true,
-    },
     {
       name: t('billing', 'Billing'),
       icon: (
