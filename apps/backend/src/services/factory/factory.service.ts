@@ -209,6 +209,188 @@ export class FactoryService {
       );
   }
 
+  private toMediaLibraryPath(pathValue: string) {
+    const normalized = this.normalizeMediaPath(pathValue);
+    if (!normalized) {
+      return '';
+    }
+    if (/^https?:\/\//i.test(normalized)) {
+      return normalized;
+    }
+    if (normalized.startsWith('materials/')) {
+      return `/uploads/${normalized.slice('materials/'.length).replace(/^\/+/, '')}`;
+    }
+    if (normalized.startsWith('/')) {
+      return normalized;
+    }
+    if (normalized.startsWith('uploads/')) {
+      return `/${normalized}`;
+    }
+    return `/${normalized}`;
+  }
+
+  private buildMediaLibraryFileName(pathValue: string, type: 'image' | 'video') {
+    const cleaned = String(pathValue || '').split('?')[0].split('#')[0];
+    const parts = cleaned.split('/').filter(Boolean);
+    const tail = parts[parts.length - 1] || '';
+    if (tail && /\.[a-zA-Z0-9]{2,6}$/.test(tail)) {
+      return tail;
+    }
+    const digest = createHash('md5')
+      .update(cleaned || `${type}:unknown`)
+      .digest('hex')
+      .slice(0, 12);
+    return `${type}-${digest}${type === 'video' ? '.mp4' : '.jpg'}`;
+  }
+
+  private async syncDraftGeneratedMediaToLibrary(
+    orgId: string,
+    draftId: string,
+    sourceContentIdsRaw: string | null | undefined
+  ) {
+    const [generateLog, videoLogs] = await Promise.all([
+      this.prisma.auditLog.findFirst({
+        where: {
+          organizationId: orgId,
+          action: 'generate',
+          resourceType: 'draft',
+          resourceId: draftId,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          detail: true,
+        },
+      }),
+      this.prisma.auditLog.findMany({
+        where: {
+          organizationId: orgId,
+          action: 'generate_video',
+          resourceType: 'draft',
+          resourceId: draftId,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+        select: {
+          detail: true,
+        },
+      }),
+    ]);
+
+    const generateDetail = (generateLog?.detail || {}) as Record<string, unknown>;
+    const generatedImages = (generateDetail.generatedImages || {}) as Record<string, unknown>;
+    const imageAssets = Array.isArray(generatedImages.assets)
+      ? generatedImages.assets
+          .map((item) => this.normalizeGeneratedMediaAsset(item))
+          .filter(
+            (item): item is { id: string; path: string; type: 'image' | 'video' } =>
+              Boolean(item)
+          )
+      : [];
+    const videoAssets = videoLogs
+      .map((log) => {
+        const detail = (log.detail || {}) as Record<string, unknown>;
+        return this.normalizeGeneratedMediaAsset({
+          id: detail.mediaId,
+          path: detail.mediaPath,
+        });
+      })
+      .filter(
+        (item): item is { id: string; path: string; type: 'image' | 'video' } =>
+          Boolean(item)
+      );
+
+    let collectedAssets = [...imageAssets, ...videoAssets];
+    if (collectedAssets.length === 0) {
+      const sourceContentIds = this.parseSourceContentIds(sourceContentIdsRaw);
+      if (sourceContentIds.length > 0) {
+        const fallback = await this.prisma.mediaAsset.findMany({
+          where: {
+            sourceContentId: { in: sourceContentIds },
+            type: { in: ['image', 'video'] },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: {
+            id: true,
+            url: true,
+            localPath: true,
+          },
+        });
+        collectedAssets = this.buildPostMedia(
+          fallback.map((item) => ({
+            id: item.id,
+            url: item.url || '',
+            localPath: item.localPath,
+          }))
+        );
+      }
+    }
+
+    const candidates = Array.from(
+      new Map(
+        collectedAssets
+          .map((item) => {
+            const path = this.toMediaLibraryPath(item.path);
+            if (!path) {
+              return null;
+            }
+            const type = item.type === 'video' ? 'video' : 'image';
+            return [
+              path,
+              {
+                path,
+                type,
+              },
+            ] as const;
+          })
+          .filter(Boolean) as Array<
+          readonly [string, { path: string; type: 'image' | 'video' }]
+        >
+      ).values()
+    );
+
+    if (candidates.length === 0) {
+      return {
+        total: 0,
+        created: 0,
+        existing: 0,
+      };
+    }
+
+    const existingRows = await this.prisma.media.findMany({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        path: { in: candidates.map((item) => item.path) },
+      },
+      select: {
+        path: true,
+      },
+    });
+    const existingPathSet = new Set(existingRows.map((item) => item.path));
+
+    const createRows = candidates
+      .filter((item) => !existingPathSet.has(item.path))
+      .map((item) => ({
+        organizationId: orgId,
+        name: this.buildMediaLibraryFileName(item.path, item.type),
+        path: item.path,
+        type: item.type,
+      }));
+
+    if (createRows.length > 0) {
+      await this.prisma.media.createMany({
+        data: createRows,
+      });
+    }
+
+    return {
+      total: candidates.length,
+      created: createRows.length,
+      existing: candidates.length - createRows.length,
+    };
+  }
+
   private requiresMediaPrecheck(providerIdentifier: string) {
     const id = (providerIdentifier || '').toLowerCase();
     return id.includes('xiaohongshu') || id === 'xhs';
@@ -1080,21 +1262,24 @@ export class FactoryService {
     input: {
       operatorId: string;
       scheduleAt: string;
+      immediate?: boolean;
       mediaType?: 'image' | 'video';
       integrationId?: string;
       title?: string;
       tags?: string[];
     }
   ) {
+    const immediate = Boolean(input.immediate);
     const scheduleAtRaw = String(input.scheduleAt || '').trim();
-    const scheduleAt = new Date(scheduleAtRaw);
-    if (!scheduleAtRaw || Number.isNaN(scheduleAt.getTime())) {
+    const parsedScheduleAt = scheduleAtRaw ? new Date(scheduleAtRaw) : null;
+    if (!immediate && (!parsedScheduleAt || Number.isNaN(parsedScheduleAt.getTime()))) {
       throw this.badRequest(
         'FACTORY_SCHEDULE_TIME_INVALID',
         'scheduleAt must be a valid datetime'
       );
     }
-    if (scheduleAt.getTime() <= Date.now()) {
+    const scheduleAt = immediate ? new Date() : (parsedScheduleAt as Date);
+    if (!immediate && scheduleAt.getTime() <= Date.now()) {
       throw this.badRequest(
         'FACTORY_SCHEDULE_TIME_INVALID',
         'scheduleAt must be in the future'
@@ -1261,9 +1446,10 @@ export class FactoryService {
     ).slice(0, mediaType === 'video' ? 1 : 12);
 
     if (selectedMedia.length === 0) {
+      const modeLabel = immediate ? 'publishing' : 'scheduling';
       throw this.badRequest(
         'FACTORY_MEDIA_REQUIRED',
-        `No ${mediaType} assets available for scheduling`
+        `No ${mediaType} assets available for ${modeLabel}`
       );
     }
 
@@ -1279,7 +1465,7 @@ export class FactoryService {
       .slice(0, 20);
     const mapped = await this.postsService.mapTypeToPost(
       {
-        type: 'schedule',
+        type: immediate ? 'now' : 'schedule',
         shortLink: false,
         date: scheduleAt.toISOString(),
         tags: [],
@@ -1297,7 +1483,7 @@ export class FactoryService {
             settings: {
               title,
               tags,
-              scheduled_time: scheduleAt.toISOString(),
+              ...(immediate ? {} : { scheduled_time: scheduleAt.toISOString() }),
             },
           },
         ],
@@ -1317,6 +1503,7 @@ export class FactoryService {
           draftId: draft.id,
           integrationId: integration.id,
           mediaType,
+          immediate,
           mediaCount: selectedMedia.length,
           scheduleAt: scheduleAt.toISOString(),
           postIds: created.map((item) => item.postId),
@@ -1330,6 +1517,7 @@ export class FactoryService {
       draftId: draft.id,
       integrationId: integration.id,
       mediaType,
+      immediate,
       mediaCount: selectedMedia.length,
       scheduleAt: scheduleAt.toISOString(),
       postIds: created.map((item) => item.postId),
@@ -1433,6 +1621,31 @@ export class FactoryService {
       },
     });
 
+    let mediaSync:
+      | {
+          total: number;
+          created: number;
+          existing: number;
+          error?: string;
+        }
+      | undefined;
+    if (input.decision === 'approve') {
+      try {
+        mediaSync = await this.syncDraftGeneratedMediaToLibrary(
+          orgId,
+          draft.id,
+          draft.sourceContentIds
+        );
+      } catch (error) {
+        mediaSync = {
+          total: 0,
+          created: 0,
+          existing: 0,
+          error: error instanceof Error ? error.message : 'unknown error',
+        };
+      }
+    }
+
     await this.prisma.auditLog.create({
       data: {
         organizationId: orgId,
@@ -1444,11 +1657,12 @@ export class FactoryService {
           decision: input.decision,
           note: input.note || null,
           workflowId: draft.workflowId,
+          mediaSync: mediaSync || null,
         },
       },
     });
 
-    return { ok: true };
+    return { ok: true, mediaSync: mediaSync || null };
   }
 
   async bulkReviewDrafts(

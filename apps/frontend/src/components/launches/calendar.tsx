@@ -54,6 +54,7 @@ import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { newDayjs } from '@gitroom/frontend/components/layout/set.timezone';
+import { useRouter } from 'next/navigation';
 
 // Extend dayjs with necessary plugins
 extend(isSameOrAfter);
@@ -80,6 +81,23 @@ const convertTimeFormatBasedOnLocality = (time: number) => {
   } else {
     return `${time}:00`;
   }
+};
+
+const getCreationScheduleAt = (
+  slotDate: dayjs.Dayjs,
+  display: string
+) => {
+  const now = newDayjs();
+  let target = slotDate.local().second(0).millisecond(0);
+  if (display === 'month') {
+    target = target.hour(10).minute(0);
+  } else {
+    target = target.minute(0);
+  }
+  if (target.isBefore(now.add(2, 'minute'))) {
+    target = now.add(10, 'minute').second(0).millisecond(0);
+  }
+  return target.toDate().toISOString();
 };
 
 export const days = [
@@ -637,6 +655,17 @@ export const CalendarColumn: FC<{
   );
 
   const addProvider = useAddProvider();
+  const router = useRouter();
+  const jumpToCreation = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const scheduleAt = getCreationScheduleAt(getDate, String(display || 'week'));
+      router.push(`/creation?schedule=1&scheduleAt=${encodeURIComponent(scheduleAt)}`);
+    },
+    [display, getDate, router]
+  );
+
   return (
     <div
       className={clsx(
@@ -658,6 +687,15 @@ export const CalendarColumn: FC<{
           canDrop && 'border border-[#612BD3]'
         )}
       >
+        {!isBeforeNow && (
+          <button
+            type="button"
+            className="absolute end-[8px] top-[8px] z-[30] rounded-[6px] border border-tableBorder bg-main/95 px-[8px] py-[3px] text-[11px] text-textColor hover:bg-main"
+            onClick={jumpToCreation}
+          >
+            去Creation编辑
+          </button>
+        )}
         <div
           className={clsx(
             'flex-col text-[12px] pointer w-full flex scrollbar scrollbar-thumb-tableBorder scrollbar-track-secondary',
@@ -816,6 +854,9 @@ const CalendarItem: FC<{
     deletePost,
   } = props;
   const { disableXAnalytics } = useVariables();
+  const isPublished = state === 'PUBLISHED';
+  const statusColor = isPublished ? '#ff2442' : '#16a34a';
+  const statusLabel = isPublished ? '已发送' : '未发送';
   const preview = useCallback(() => {
     window.open(`/p/` + post.id + '?share=true', '_blank');
   }, [post]);
@@ -844,24 +885,23 @@ const CalendarItem: FC<{
     >
       <div
         className={clsx(
-          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px] bg-btnPrimary'
+          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px]'
         )}
         style={{
-          backgroundColor: post?.tags?.[0]?.tag?.color,
+          backgroundColor: statusColor,
         }}
       >
         <div
           className={clsx(
-            post?.tags?.[0]?.tag?.color ? 'mix-blend-difference' : '',
             'group-hover:hidden cursor-pointer'
           )}
         >
-          {post.tags.map((p) => p.tag.name).join(', ')}
+          {statusLabel}
+          {post.tags.length ? ` · ${post.tags.map((p) => p.tag.name).join(', ')}` : ''}
         </div>
         <div
           className={clsx(
-            'hidden group-hover:block hover:underline cursor-pointer',
-            post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
+            'hidden group-hover:block hover:underline cursor-pointer'
           )}
           onClick={duplicatePost}
         >
@@ -869,8 +909,7 @@ const CalendarItem: FC<{
         </div>
         <div
           className={clsx(
-            'hidden group-hover:block hover:underline cursor-pointer',
-            post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
+            'hidden group-hover:block hover:underline cursor-pointer'
           )}
           onClick={preview}
         >
@@ -881,8 +920,7 @@ const CalendarItem: FC<{
         ) : (
           <div
             className={clsx(
-              'hidden group-hover:block hover:underline cursor-pointer',
-              post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
+              'hidden group-hover:block hover:underline cursor-pointer'
             )}
             onClick={statistics}
           >
@@ -891,8 +929,7 @@ const CalendarItem: FC<{
         )}{' '}
         <div
           className={clsx(
-            'hidden group-hover:block hover:underline cursor-pointer',
-            post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
+            'hidden group-hover:block hover:underline cursor-pointer'
           )}
           onClick={deletePost}
         >

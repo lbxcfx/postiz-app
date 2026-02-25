@@ -121,7 +121,16 @@ type IntegrationItem = {
   id: string;
   name: string;
   identifier: string;
+  internalId?: string;
+  display?: unknown;
   disabled?: boolean;
+};
+
+type MaterialsLoginStatus = {
+  has_valid_login?: boolean;
+  message?: string;
+  cookies_found?: string[];
+  [key: string]: unknown;
 };
 
 type ScheduleCreationResult = {
@@ -130,9 +139,143 @@ type ScheduleCreationResult = {
   draftId: string;
   integrationId: string;
   mediaType: 'image' | 'video';
+  immediate?: boolean;
   mediaCount: number;
   scheduleAt: string;
   postIds: string[];
+};
+
+type ReviewDraftResult = {
+  ok: boolean;
+  mediaSync?: {
+    total: number;
+    created: number;
+    existing: number;
+    error?: string;
+  } | null;
+};
+
+const XHS_LOGIN_HINT_KEYS = [
+  'account_id',
+  'accountId',
+  'account_name',
+  'accountName',
+  'username',
+  'user_name',
+  'nickname',
+  'user_id',
+  'userId',
+  'session_id',
+  'sessionId',
+] as const;
+
+const addHintToken = (target: Set<string>, value: unknown) => {
+  if (value === null || value === undefined) return;
+  if (typeof value === 'number') {
+    const token = String(value).trim().toLowerCase();
+    if (token) target.add(token);
+    return;
+  }
+  if (typeof value === 'string') {
+    const raw = value.trim().toLowerCase();
+    if (!raw) return;
+    target.add(raw);
+    const base = raw.split(/[\\/]/).pop();
+    if (base && base !== raw) target.add(base);
+    raw
+      .split(/[^a-z0-9\u4e00-\u9fa5]+/i)
+      .map((item) => item.trim().toLowerCase())
+      .filter((item) => item.length >= 2)
+      .forEach((item) => target.add(item));
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => addHintToken(target, item));
+    return;
+  }
+  if (typeof value === 'object') {
+    Object.values(value as Record<string, unknown>).forEach((item) =>
+      addHintToken(target, item)
+    );
+  }
+};
+
+const getIntegrationTokens = (integration: IntegrationItem) => {
+  const tokens = new Set<string>();
+  addHintToken(tokens, integration.id);
+  addHintToken(tokens, integration.internalId);
+  addHintToken(tokens, integration.name);
+  addHintToken(tokens, integration.identifier);
+  addHintToken(tokens, integration.display);
+  return Array.from(tokens);
+};
+
+const getLoginHintTokens = (status: MaterialsLoginStatus | null | undefined) => {
+  const tokens = new Set<string>();
+  if (!status) {
+    return [] as string[];
+  }
+  addHintToken(tokens, status.message);
+  addHintToken(tokens, status.cookies_found);
+  XHS_LOGIN_HINT_KEYS.forEach((key) => addHintToken(tokens, status[key]));
+  addHintToken(tokens, (status as { account?: unknown }).account);
+  addHintToken(tokens, (status as { data?: unknown }).data);
+  return Array.from(tokens);
+};
+
+const scoreIntegrationByHints = (
+  integration: IntegrationItem,
+  loginHints: string[]
+) => {
+  if (loginHints.length === 0) return 0;
+  const integrationTokens = getIntegrationTokens(integration);
+  if (integrationTokens.length === 0) return 0;
+
+  let score = 0;
+  const idTokens = [integration.id, integration.internalId]
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const hint of loginHints) {
+    for (const candidate of integrationTokens) {
+      if (!hint || !candidate) continue;
+      if (hint === candidate) {
+        score += idTokens.includes(candidate) ? 24 : 10;
+        continue;
+      }
+      if (
+        hint.length >= 4 &&
+        candidate.length >= 4 &&
+        (hint.includes(candidate) || candidate.includes(hint))
+      ) {
+        score += 4;
+      }
+    }
+  }
+  return score;
+};
+
+const pickDefaultXhsIntegration = (
+  integrations: IntegrationItem[],
+  loginStatus: MaterialsLoginStatus | null | undefined
+) => {
+  if (!integrations.length) return '';
+  const loginHints = getLoginHintTokens(loginStatus);
+  if (!loginHints.length) {
+    return integrations[0]?.id || '';
+  }
+
+  const ranked = integrations
+    .map((item) => ({
+      id: item.id,
+      score: scoreIntegrationByHints(item, loginHints),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  if ((ranked[0]?.score || 0) <= 0) {
+    return integrations[0]?.id || '';
+  }
+  return ranked[0]?.id || '';
 };
 
 export const ContentGenerationConsole = () => {
@@ -285,7 +428,8 @@ export const ContentGenerationConsole = () => {
     setError('');
     try {
       const failedParts: string[] = [];
-      const [sourceResp, taskResp, workflowResp, integrationResp] = await Promise.all([
+      const [sourceResp, taskResp, workflowResp, integrationResp, loginStatusResp] =
+        await Promise.all([
         call<{ items: SourceContent[] }>(
           `/factory/content/paged?page=1&pageSize=40&sortBy=createdAt&sortOrder=desc`
         ).catch((reason) => {
@@ -311,6 +455,16 @@ export const ContentGenerationConsole = () => {
           );
           return { integrations: [] as IntegrationItem[] };
         }),
+        call<MaterialsLoginStatus>(`/materials/login-status?platform=xhs`).catch(
+          (reason) => {
+            failedParts.push(
+              reason instanceof Error
+                ? `登录态(${reason.message})`
+                : '登录态'
+            );
+            return { has_valid_login: false } as MaterialsLoginStatus;
+          }
+        ),
       ]);
       setSourceContents(sourceResp.items || []);
       setTasks(taskResp.items || []);
@@ -320,9 +474,18 @@ export const ContentGenerationConsole = () => {
           item?.identifier?.toLowerCase().includes('xiaohongshu') && !item.disabled
       );
       setXhsIntegrations(xhs);
-      if (!scheduleForm.integrationId && xhs[0]?.id) {
-        setScheduleForm((prev) => ({ ...prev, integrationId: xhs[0].id }));
-      }
+      const preferredId = pickDefaultXhsIntegration(xhs, loginStatusResp);
+      setScheduleForm((prev) => {
+        if (!xhs.length) return prev;
+        if (prev.integrationId && xhs.some((item) => item.id === prev.integrationId)) {
+          return prev;
+        }
+        const nextId = preferredId || xhs[0]?.id || '';
+        if (!nextId || nextId === prev.integrationId) {
+          return prev;
+        }
+        return { ...prev, integrationId: nextId };
+      });
 
       if (failedParts.length > 0) {
         setError(`部分数据加载失败: ${failedParts.join(' / ')}`);
@@ -334,7 +497,7 @@ export const ContentGenerationConsole = () => {
     } finally {
       setLoading(false);
     }
-  }, [call, scheduleForm.integrationId, toaster]);
+  }, [call, toaster]);
 
   useEffect(() => {
     loadData();
@@ -532,6 +695,23 @@ export const ContentGenerationConsole = () => {
     return () => clearTimeout(timer);
   }, [loadTaskDetail, searchParams, selectedWorkflowId, tasks]);
 
+  useEffect(() => {
+    const scheduleAtFromCalendar = searchParams.get('scheduleAt');
+    if (!scheduleAtFromCalendar) {
+      return;
+    }
+    const parsed = new Date(scheduleAtFromCalendar);
+    if (Number.isNaN(parsed.getTime())) {
+      return;
+    }
+    const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16);
+    setScheduleForm((prev) =>
+      prev.scheduleAt === local ? prev : { ...prev, scheduleAt: local }
+    );
+  }, [searchParams]);
+
   const reviewSelectedTask = useCallback(
     async (decision: 'approve' | 'reject') => {
       if (!taskDetail?.draft?.id) {
@@ -541,14 +721,30 @@ export const ContentGenerationConsole = () => {
       const action = decision === 'approve' ? 'approve' : 'regenerate';
       setActioning(action);
       try {
-        await call(`/factory/drafts/${taskDetail.draft.id}/review`, {
+        const result = await call<ReviewDraftResult>(
+          `/factory/drafts/${taskDetail.draft.id}/review`,
+          {
           method: 'POST',
           body: JSON.stringify({
             decision,
             note: reviewNote.trim() || undefined,
           }),
-        });
-        toaster.show(decision === 'approve' ? '已通过，进入媒体库查看' : '已提交重生请求', 'success');
+          }
+        );
+        if (decision === 'approve') {
+          const synced = result?.mediaSync;
+          if (synced?.error) {
+            toaster.show(`已通过，但同步媒体库失败：${synced.error}`, 'warning');
+          } else if (synced && synced.created > 0) {
+            toaster.show(`已通过，已入库 ${synced.created} 个素材`, 'success');
+          } else if (synced && synced.total > 0) {
+            toaster.show('已通过，素材已存在于媒体库', 'success');
+          } else {
+            toaster.show('已通过，但没有可入库的素材', 'warning');
+          }
+        } else {
+          toaster.show('已提交重生请求', 'success');
+        }
         await Promise.all([loadData(), loadTaskDetail(taskDetail.workflowId)]);
         if (decision === 'approve') {
           window.location.href = '/media';
@@ -584,7 +780,7 @@ export const ContentGenerationConsole = () => {
     }
   }, [call, loadData, loadTaskDetail, taskDetail, toaster]);
 
-  const scheduleSelectedTask = useCallback(async () => {
+  const submitScheduleTask = useCallback(async (mode: 'schedule' | 'immediate') => {
     if (!taskDetail?.workflowId) {
       toaster.show('请先选择任务', 'warning');
       return;
@@ -593,15 +789,20 @@ export const ContentGenerationConsole = () => {
       toaster.show('请选择小红书发布账号', 'warning');
       return;
     }
-    const scheduleAtLocal = String(scheduleForm.scheduleAt || '').trim();
-    if (!scheduleAtLocal) {
-      toaster.show('请选择发布时间', 'warning');
-      return;
-    }
-    const scheduleAt = new Date(scheduleAtLocal);
-    if (Number.isNaN(scheduleAt.getTime())) {
-      toaster.show('发布时间格式不正确', 'warning');
-      return;
+    const isImmediate = mode === 'immediate';
+    const scheduleAt = isImmediate
+      ? new Date()
+      : new Date(String(scheduleForm.scheduleAt || '').trim());
+    if (!isImmediate) {
+      const scheduleAtLocal = String(scheduleForm.scheduleAt || '').trim();
+      if (!scheduleAtLocal) {
+        toaster.show('请选择发布时间', 'warning');
+        return;
+      }
+      if (Number.isNaN(scheduleAt.getTime())) {
+        toaster.show('发布时间格式不正确', 'warning');
+        return;
+      }
     }
 
     setScheduling(true);
@@ -616,6 +817,7 @@ export const ContentGenerationConsole = () => {
           method: 'POST',
           body: JSON.stringify({
             scheduleAt: scheduleAt.toISOString(),
+            immediate: isImmediate,
             mediaType: scheduleForm.mediaType,
             integrationId: scheduleForm.integrationId,
             title: scheduleForm.title.trim() || undefined,
@@ -623,18 +825,26 @@ export const ContentGenerationConsole = () => {
           }),
         }
       );
-      toaster.show(
-        `已定时发送到小红书（${result.mediaType} ${result.mediaCount} 个素材）`,
-        'success'
-      );
+      toaster.show(isImmediate
+        ? `已提交立即发送（${result.mediaType} ${result.mediaCount} 个素材）`
+        : `已定时发送到小红书（${result.mediaType} ${result.mediaCount} 个素材）`,
+      'success');
       await Promise.all([loadData(), loadTaskDetail(taskDetail.workflowId)]);
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Schedule failed';
+      const message = e instanceof Error ? e.message : 'Submit schedule failed';
       toaster.show(message, 'warning');
     } finally {
       setScheduling(false);
     }
   }, [call, loadData, loadTaskDetail, scheduleForm, taskDetail, toaster]);
+
+  const scheduleSelectedTask = useCallback(async () => {
+    await submitScheduleTask('schedule');
+  }, [submitScheduleTask]);
+
+  const publishNowSelectedTask = useCallback(async () => {
+    await submitScheduleTask('immediate');
+  }, [submitScheduleTask]);
 
   return (
     <div className="bg-newBgColorInner p-[20px] flex flex-1 flex-col gap-[16px] transition-all">
@@ -1027,7 +1237,7 @@ export const ContentGenerationConsole = () => {
                   disabled={!taskDetail.actions.canApprove || actioning !== ''}
                   onClick={() => reviewSelectedTask('approve')}
                 >
-                  {actioning === 'approve' ? '处理中...' : '通过并进入视频库'}
+                  {actioning === 'approve' ? '处理中...' : '通过并进入媒体库'}
                 </button>
                 <button
                   className="bg-amber-500 text-white rounded-[6px] px-[12px] py-[7px] text-[12px] disabled:opacity-60"
@@ -1047,7 +1257,7 @@ export const ContentGenerationConsole = () => {
                   href="/media"
                   className="bg-sixth border border-tableBorder rounded-[6px] px-[12px] py-[7px] text-[12px]"
                 >
-                  打开视频库
+                  打开媒体库
                 </a>
               </div>
             </div>
@@ -1058,7 +1268,7 @@ export const ContentGenerationConsole = () => {
               className="rounded-[8px] border border-tableBorder p-[10px]"
             >
               <div className="text-[13px] font-semibold text-textColor mb-[8px]">
-                日历定时发送到小红书
+                发送到小红书（立即/定时）
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-[10px]">
                 <div>
@@ -1136,6 +1346,18 @@ export const ContentGenerationConsole = () => {
               </div>
 
               <div className="mt-[10px] flex flex-wrap items-center gap-[8px]">
+                <button
+                  className="bg-[#ff2442] text-white rounded-[6px] px-[12px] py-[7px] text-[12px] disabled:opacity-60"
+                  disabled={
+                    scheduling ||
+                    !scheduleForm.integrationId ||
+                    (!taskDetail.preview.images.length &&
+                      !taskDetail.preview.videos.length)
+                  }
+                  onClick={publishNowSelectedTask}
+                >
+                  {scheduling ? '提交中...' : '立即发送到小红书'}
+                </button>
                 <button
                   className="bg-primary text-white rounded-[6px] px-[12px] py-[7px] text-[12px] disabled:opacity-60"
                   disabled={

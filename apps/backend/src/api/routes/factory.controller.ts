@@ -82,6 +82,7 @@ export class FactoryController {
     @Body()
     body: {
       scheduleAt: string;
+      immediate?: boolean;
       mediaType?: 'image' | 'video';
       integrationId?: string;
       title?: string;
@@ -91,6 +92,7 @@ export class FactoryController {
     return this.factory.scheduleCreationTask(org.id, workflowId, {
       operatorId: user.id,
       scheduleAt: body.scheduleAt,
+      immediate: body.immediate,
       mediaType: body.mediaType,
       integrationId: body.integrationId,
       title: body.title,
