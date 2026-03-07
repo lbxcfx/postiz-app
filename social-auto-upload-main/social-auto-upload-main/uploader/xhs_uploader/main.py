@@ -1,5 +1,6 @@
 import configparser
 import json
+import os
 import pathlib
 from time import sleep
 
@@ -12,6 +13,14 @@ config = configparser.RawConfigParser()
 config.read('accounts.ini')
 
 
+def resolve_headless(default_headless: bool) -> bool:
+    if default_headless:
+        return True
+    if os.name == "nt":
+        return False
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def sign_local(uri, data=None, a1="", web_session=""):
     for _ in range(10):
         try:
@@ -20,7 +29,9 @@ def sign_local(uri, data=None, a1="", web_session=""):
                 chromium = playwright.chromium
 
                 # 如果一直失败可尝试设置成 False 让其打开浏览器，适当添加 sleep 可查看浏览器状态
-                browser = chromium.launch(headless=LOCAL_CHROME_HEADLESS)
+                browser = chromium.launch(
+                    headless=resolve_headless(LOCAL_CHROME_HEADLESS)
+                )
 
                 browser_context = browser.new_context()
                 browser_context.add_init_script(path=stealth_js_path)

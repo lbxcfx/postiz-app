@@ -46,7 +46,15 @@ interface XhsLoginStatus {
     messages: string[];
 }
 
+interface MaterialCrawlerLoginStatus {
+    has_valid_login?: boolean;
+    user_data_dir?: string;
+}
+
 const CHINA_SOCIAL_SERVICE_URL = process.env.CHINA_SOCIAL_SERVICE_URL || 'http://localhost:5409';
+const MEDIACRAWLER_API_URL = (
+    process.env.MEDIACRAWLER_API_URL || 'http://127.0.0.1:8081'
+).replace(/\/+$/, '');
 
 @Rules(
     'Xiaohongshu (小红书) supports video and image content with title and tags. Maximum title length is 20 characters. Great for lifestyle, beauty, and shopping content.'
@@ -218,7 +226,9 @@ export class XiaohongshuProvider extends SocialAbstract implements SocialProvide
         const [firstPost] = postDetails;
 
         // Extract account ID from access token
-        const accountId = accessToken.split(':')[0] || id;
+        const accountId = await this.resolveAccountIdForPublish(
+            accessToken.split(':')[0] || id
+        );
 
         // Get video from media
         const video = firstPost.media?.find(m => m.type === 'video');
@@ -242,7 +252,7 @@ export class XiaohongshuProvider extends SocialAbstract implements SocialProvide
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        account_id: parseInt(accountId),
+                        account_id: accountId,
                         video_url: uploadedFileName,
                         title: firstPost.settings?.title || firstPost.message?.substring(0, 20) || '',
                         tags: firstPost.settings?.tags || [],
@@ -278,7 +288,7 @@ export class XiaohongshuProvider extends SocialAbstract implements SocialProvide
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        account_id: parseInt(accountId),
+                        account_id: accountId,
                         image_urls: uploadedImages,
                         title: firstPost.settings?.title || firstPost.message?.substring(0, 20) || '',
                         description: firstPost.message || '',
@@ -306,6 +316,149 @@ export class XiaohongshuProvider extends SocialAbstract implements SocialProvide
             console.error('Xiaohongshu post error:', error);
             throw error;
         }
+    }
+
+    private normalizeAccountId(input: string | number | null | undefined) {
+        const accountId = Number(String(input || '').trim());
+        return Number.isFinite(accountId) && accountId > 0 ? accountId : 0;
+    }
+
+    private async validateAccount(accountId: number): Promise<boolean> {
+        if (!accountId) {
+            return false;
+        }
+        try {
+            const response = await fetch(
+                `${CHINA_SOCIAL_SERVICE_URL}/api/v1/accounts/${accountId}/validate`,
+                { method: 'POST' }
+            );
+            if (!response.ok) {
+                return false;
+            }
+            const result: XhsApiResponse<{ id: number; valid: boolean }> =
+                await response.json();
+            if (result?.code !== 200 || typeof result?.data?.valid !== 'boolean') {
+                return false;
+            }
+            return result.data.valid;
+        } catch {
+            return false;
+        }
+    }
+
+    private async fetchXhsAccounts(): Promise<XhsAccount[]> {
+        try {
+            const response = await fetch(
+                `${CHINA_SOCIAL_SERVICE_URL}/api/v1/accounts?platform=xiaohongshu`
+            );
+            if (!response.ok) {
+                return [];
+            }
+            const result: XhsApiResponse<XhsAccount[]> = await response.json();
+            return Array.isArray(result?.data) ? result.data : [];
+        } catch {
+            return [];
+        }
+    }
+
+    private rankAccounts(accounts: XhsAccount[]) {
+        return (accounts || [])
+            .filter((account) => account?.id && account?.filePath)
+            .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    }
+
+    private isUserDataDirAccount(account?: XhsAccount | null) {
+        const value = String(account?.filePath || '').trim();
+        return value.startsWith('user_data_dir::');
+    }
+
+    private async importAccountFromMaterialsLogin(): Promise<number> {
+        try {
+            const statusResponse = await fetch(
+                `${MEDIACRAWLER_API_URL}/api/crawler/login-status/xhs`,
+                { method: 'GET' }
+            );
+            if (!statusResponse.ok) {
+                return 0;
+            }
+            const statusResult = (await statusResponse.json()) as MaterialCrawlerLoginStatus;
+            const userDataDir = String(statusResult?.user_data_dir || '').trim();
+            if (!statusResult?.has_valid_login || !userDataDir) {
+                return 0;
+            }
+
+            const importResponse = await fetch(
+                `${CHINA_SOCIAL_SERVICE_URL}/api/v1/accounts/import-user-data`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        platform: 'xiaohongshu',
+                        user_data_dir: userDataDir,
+                        account_name: `materials_xhs_${Date.now().toString(36)}`,
+                    }),
+                }
+            );
+            if (!importResponse.ok) {
+                return 0;
+            }
+            const importResult = (await importResponse.json()) as XhsApiResponse<{
+                id?: number;
+            }>;
+            return this.normalizeAccountId(importResult?.data?.id);
+        } catch {
+            return 0;
+        }
+    }
+
+    private async resolveAccountIdForPublish(inputAccountId: string) {
+        const preferredAccountId = this.normalizeAccountId(inputAccountId);
+        const rankedAccounts = this.rankAccounts(await this.fetchXhsAccounts());
+        const preferredAccount = rankedAccounts.find(
+            (account) => this.normalizeAccountId(account.id) === preferredAccountId
+        );
+
+        if (preferredAccountId) {
+            const preferredValid = await this.validateAccount(preferredAccountId);
+            if (preferredValid === true) {
+                return preferredAccountId;
+            }
+            if (this.isUserDataDirAccount(preferredAccount)) {
+                // Shared materials login can still publish through API fallback
+                // even when creator page validation fails.
+                return preferredAccountId;
+            }
+        }
+
+        const fallbackCandidates = rankedAccounts.slice(0, 5);
+        for (const account of fallbackCandidates) {
+            const accountId = this.normalizeAccountId(account.id);
+            if (!accountId || accountId === preferredAccountId) {
+                continue;
+            }
+            const valid = await this.validateAccount(accountId);
+            if (valid === true) {
+                return accountId;
+            }
+        }
+
+        const sharedLoginFallback = fallbackCandidates.find((account) =>
+            this.isUserDataDirAccount(account)
+        );
+        if (sharedLoginFallback?.id) {
+            return this.normalizeAccountId(sharedLoginFallback.id);
+        }
+
+        const importedAccountId = await this.importAccountFromMaterialsLogin();
+        if (importedAccountId) {
+            return importedAccountId;
+        }
+
+        throw new Error(
+            'No available xiaohongshu login source found. Please login in Materials and retry.'
+        );
     }
 
     private async uploadMediaToChinaService(mediaUrl: string): Promise<string> {
