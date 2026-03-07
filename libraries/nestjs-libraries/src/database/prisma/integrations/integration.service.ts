@@ -621,6 +621,40 @@ export class IntegrationService {
       picked.userName || picked.username || picked.account_name || `xhs_${internalId}`
     ).trim();
     const token = `${internalId}:${filePath}`;
+    const identityKeys = this.collectXhsIdentityKeys({
+      accountName,
+      filePath,
+      internalId,
+    });
+
+    const existingByInternalId = existingXhs.find(
+      (item) => String(item.internalId || '').trim() === internalId
+    );
+
+    // Reuse existing integration by account identity even when social service account id changes.
+    if (!existingByInternalId) {
+      const identityMatched = this.findXhsIntegrationByIdentity(
+        existingXhs,
+        identityKeys
+      );
+      if (identityMatched?.id) {
+        await this._integrationRepository.updateIntegration(identityMatched.id, {
+          internalId,
+          rootInternalId: internalId.split('_').pop() || internalId,
+          providerIdentifier: 'xiaohongshu',
+          name: accountName || identityMatched.name || `xhs_${internalId}`,
+          profile: accountName || identityMatched.profile || `xhs_${internalId}`,
+          token,
+          refreshToken: token,
+          tokenExpiration: new Date(Date.now() + 3600 * 24 * 30 * 1000),
+          deletedAt: null,
+          disabled: false,
+          refreshNeeded: false,
+          inBetweenSteps: false,
+        });
+        return this.getIntegrationById(orgId, identityMatched.id);
+      }
+    }
 
     const integration = await this.createOrUpdateIntegration(
       undefined,
@@ -650,6 +684,51 @@ export class IntegrationService {
   private isXhsProvider(providerIdentifier: string) {
     const value = String(providerIdentifier || '').toLowerCase();
     return value.includes('xiaohongshu') || value === 'xhs';
+  }
+
+  private normalizeXhsIdentity(value: unknown) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  private collectXhsIdentityKeys(input: {
+    accountName: string;
+    filePath: string;
+    internalId: string;
+  }) {
+    const keys = new Set<string>();
+    const add = (value: unknown) => {
+      const normalized = this.normalizeXhsIdentity(value);
+      if (normalized) {
+        keys.add(normalized);
+      }
+    };
+
+    add(input.accountName);
+    add(input.internalId);
+    if (input.filePath.startsWith('user_data_dir::')) {
+      add(input.filePath);
+    }
+
+    return [...keys];
+  }
+
+  private findXhsIntegrationByIdentity(
+    integrations: Integration[],
+    identityKeys: string[]
+  ) {
+    if (!identityKeys.length) {
+      return null;
+    }
+    const keySet = new Set(identityKeys.map((item) => this.normalizeXhsIdentity(item)));
+
+    return (
+      integrations.find((item) => {
+        const profile = this.normalizeXhsIdentity(item.profile);
+        const name = this.normalizeXhsIdentity(item.name);
+        const internalId = this.normalizeXhsIdentity(item.internalId);
+        return keySet.has(profile) || keySet.has(name) || keySet.has(internalId);
+      }) || null
+    );
   }
 
   private async fetchChinaAccounts(platform: 'xiaohongshu' | 'douyin') {

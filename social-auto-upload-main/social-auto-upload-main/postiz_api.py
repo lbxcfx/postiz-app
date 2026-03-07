@@ -197,19 +197,25 @@ def import_account_from_user_data():
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id FROM user_info WHERE type = ? AND filePath = ? ORDER BY id DESC LIMIT 1",
-                (platform_type, stored_file_ref),
+                "SELECT id FROM user_info WHERE type = ? AND lower(userName) = lower(?) ORDER BY id DESC LIMIT 1",
+                (platform_type, account_name),
             )
             existing = cursor.fetchone()
+            if not existing:
+                cursor.execute(
+                    "SELECT id FROM user_info WHERE type = ? AND filePath = ? ORDER BY id DESC LIMIT 1",
+                    (platform_type, stored_file_ref),
+                )
+                existing = cursor.fetchone()
             if existing:
                 account_id = int(existing["id"])
                 cursor.execute(
                     """
                     UPDATE user_info
-                    SET userName = ?, status = ?
+                    SET filePath = ?, userName = ?, status = ?
                     WHERE id = ?
                     """,
-                    (account_name, status, account_id),
+                    (stored_file_ref, account_name, status, account_id),
                 )
             else:
                 cursor.execute(
