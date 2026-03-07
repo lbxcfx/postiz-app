@@ -1,1 +1,0 @@
-print('FOUND' if spec else 'MISSING')

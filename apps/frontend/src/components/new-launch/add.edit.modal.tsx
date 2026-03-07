@@ -2,7 +2,7 @@
 import 'reflect-metadata';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import dayjs from 'dayjs';
-import { FC, useEffect } from 'react';
+import { FC, useEffect, useRef, useState } from 'react';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { ManageModal } from '@gitroom/frontend/components/new-launch/manage.modal';
 import { Integrations } from '@gitroom/frontend/components/launches/calendar.context';
@@ -44,7 +44,6 @@ export const AddEditModal: FC<AddEditModalProps> = (props) => {
       }))
     );
 
-  const integrations = useLaunchStore((state) => state.integrations);
   useEffect(() => {
     setDummy(!!props.dummy);
     setDate(props.date || newDayjs());
@@ -52,32 +51,65 @@ export const AddEditModal: FC<AddEditModalProps> = (props) => {
     setIsCreateSet(!!props.addEditSets);
   }, []);
 
-  if (!integrations.length) {
-    return null;
-  }
-
   return <AddEditModalInner {...props} />;
 };
 
 export const AddEditModalInner: FC<AddEditModalProps> = (props) => {
   const existingData = useExistingData();
-  const { addOrRemoveSelectedIntegration, selectedIntegrations, integrations } =
+  const initializedRef = useRef(false);
+  const [selectionReady, setSelectionReady] = useState(false);
+  const {
+    selectedIntegrations,
+    integrations,
+    setSelectedIntegrations,
+    setCurrent,
+  } =
     useLaunchStore(
       useShallow((state) => ({
         integrations: state.integrations,
         selectedIntegrations: state.selectedIntegrations,
-        addOrRemoveSelectedIntegration: state.addOrRemoveSelectedIntegration,
+        setSelectedIntegrations: state.setSelectedIntegrations,
+        setCurrent: state.setCurrent,
       }))
     );
 
   useEffect(() => {
+    if (initializedRef.current) {
+      return;
+    }
+
+    const needsPresetSelection =
+      !!props?.set?.posts?.length ||
+      !!existingData.integration ||
+      !!props?.selectedChannels?.length;
+
+    if (needsPresetSelection && integrations.length === 0) {
+      return;
+    }
+
+    const preselected = new Map<
+      string,
+      { selectedIntegrations: Integrations; settings: any }
+    >();
+    const appendSelection = (integration?: Integrations, settings: any = {}) => {
+      if (!integration?.id) {
+        return;
+      }
+      if (!preselected.has(integration.id)) {
+        preselected.set(integration.id, {
+          selectedIntegrations: integration,
+          settings: settings || {},
+        });
+      }
+    };
+
     if (props?.set?.posts?.length) {
       for (const post of props?.set?.posts) {
         if (post.integration) {
           const integration = integrations.find(
             (i) => i.id === post.integration.id
           );
-          addOrRemoveSelectedIntegration(integration, post.settings);
+          appendSelection(integration, post.settings);
         }
       }
     }
@@ -86,18 +118,51 @@ export const AddEditModalInner: FC<AddEditModalProps> = (props) => {
       const integration = integrations.find(
         (i) => i.id === existingData.integration
       );
-      addOrRemoveSelectedIntegration(integration, existingData.settings);
+      appendSelection(integration, existingData.settings);
     }
 
     if (props?.selectedChannels?.length) {
       for (const channel of props.selectedChannels) {
         const integration = integrations.find((i) => i.id === channel);
-        if (integration) {
-          addOrRemoveSelectedIntegration(integration, {});
-        }
+        appendSelection(integration, {});
       }
     }
-  }, []);
+
+    const normalized = Array.from(preselected.values());
+    if (normalized.length) {
+      setSelectedIntegrations(normalized);
+      const preferredCurrent =
+        props.focusedChannel &&
+        normalized.some(
+          (item) => item.selectedIntegrations.id === props.focusedChannel
+        )
+          ? props.focusedChannel
+          : normalized[0].selectedIntegrations.id;
+      setCurrent(preferredCurrent);
+    }
+
+    initializedRef.current = true;
+    setSelectionReady(true);
+  }, [
+    integrations,
+    existingData.integration,
+    existingData.settings,
+    props?.set?.posts,
+    props?.selectedChannels,
+    props.focusedChannel,
+    setCurrent,
+    setSelectedIntegrations,
+  ]);
+
+  const waitingPresetSelection =
+    !selectionReady &&
+    (!!existingData.integration ||
+      !!props?.selectedChannels?.length ||
+      !!props?.set?.posts?.length);
+
+  if (waitingPresetSelection) {
+    return null;
+  }
 
   if (existingData.integration && selectedIntegrations.length === 0) {
     return null;

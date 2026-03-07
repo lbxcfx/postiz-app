@@ -21,6 +21,19 @@ import { ConfigurationChecker } from '@gitroom/helpers/configuration/configurati
 import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 
 async function start() {
+  const allowedOrigins = new Set(
+    [
+      process.env.FRONTEND_URL,
+      process.env.MAIN_URL,
+      'http://localhost:4200',
+      'http://127.0.0.1:4200',
+      'http://[::1]:4200',
+      'http://localhost:6274',
+      'http://127.0.0.1:6274',
+      'http://[::1]:6274',
+    ].filter((item): item is string => Boolean(item))
+  );
+
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
     cors: {
@@ -28,6 +41,11 @@ async function start() {
       allowedHeaders: [
         'Content-Type',
         'Authorization',
+        'auth',
+        'showorg',
+        'impersonate',
+        'sentry-trace',
+        'baggage',
         'x-copilotkit-runtime-client-gql-version',
       ],
       exposedHeaders: [
@@ -37,11 +55,28 @@ async function start() {
         'x-copilotkit-runtime-client-gql-version',
         ...(process.env.NOT_SECURED ? ['auth', 'showorg', 'impersonate'] : []),
       ],
-      origin: [
-        process.env.FRONTEND_URL,
-        'http://localhost:6274',
-        ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
-      ],
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.has(origin)) {
+          callback(null, true);
+          return;
+        }
+        try {
+          const parsed = new URL(origin);
+          const isLocalHost =
+            parsed.hostname === 'localhost' ||
+            parsed.hostname === '127.0.0.1' ||
+            parsed.hostname === '::1' ||
+            parsed.hostname === '[::1]';
+          const isAllowedPort = parsed.port === '4200' || parsed.port === '6274';
+          if (isLocalHost && isAllowedPort) {
+            callback(null, true);
+            return;
+          }
+        } catch {
+          // Ignore parse errors and fall through to deny.
+        }
+        callback(null, false);
+      },
     },
   });
 

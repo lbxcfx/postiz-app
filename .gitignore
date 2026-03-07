@@ -58,3 +58,17 @@ Thumbs.db
 .secrets/
 libraries/plugins/src/plugins.ts
 i18n.cache
+
+# Runtime/debug artifacts (local only)
+.runtime/**
+reports/**
+!.runtime/
+!reports/
+!reports/.gitkeep
+
+# Local debug leftovers
+.runtime_backend*.log
+stdout
+query
+.Rhistory
+=

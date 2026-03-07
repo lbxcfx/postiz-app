@@ -1,6 +1,5 @@
 'use client';
 
-import { AddProviderButton } from '@gitroom/frontend/components/launches/add.provider.component';
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import { groupBy, orderBy } from 'lodash';
@@ -25,6 +24,7 @@ import { NewPost } from '@gitroom/frontend/components/launches/new.post';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useIntegrationList } from '@gitroom/frontend/components/launches/helpers/use.integration.list';
 import useCookie from 'react-use-cookie';
+import { isXhsIdentifier } from '@gitroom/frontend/components/launches/helpers/xhs.integration.match';
 
 export const SVGLine = () => {
   return (
@@ -357,17 +357,22 @@ export const LaunchesComponent = () => {
   const [collapseMenu, setCollapseMenu] = useCookie('collapseMenu', '0');
   const [mode] = useCookie('mode', 'dark');
   const { isLoading, data: integrations, mutate } = useIntegrationList();
+  const xiaohongshuIntegrations = useMemo(() => {
+    return (integrations || []).filter((integration: any) =>
+      isXhsIdentifier(integration?.identifier)
+    );
+  }, [integrations]);
 
   const totalNonDisabledChannels = useMemo(() => {
     return (
-      integrations?.filter((integration: any) => !integration.disabled)
+      xiaohongshuIntegrations?.filter((integration: any) => !integration.disabled)
         ?.length || 0
     );
-  }, [integrations]);
+  }, [xiaohongshuIntegrations]);
   const changeItemGroup = useCallback(
     async (id: string, group: string) => {
       mutate(
-        integrations.map((integration: any) => {
+        (integrations || []).map((integration: any) => {
           if (integration.id === id) {
             return {
               ...integration,
@@ -392,11 +397,11 @@ export const LaunchesComponent = () => {
   );
   const sortedIntegrations = useMemo(() => {
     return orderBy(
-      integrations,
+      xiaohongshuIntegrations,
       ['type', 'disabled', 'identifier'],
       ['desc', 'asc', 'asc']
     );
-  }, [integrations]);
+  }, [xiaohongshuIntegrations]);
   const menuIntegrations = useMemo(() => {
     return orderBy(
       Object.values(
@@ -530,7 +535,6 @@ export const LaunchesComponent = () => {
               </div>
             </div>
             <div className="flex flex-col gap-[8px] group-[.sidebar]:mx-auto group-[.sidebar]:w-[44px]">
-              <AddProviderButton update={() => update(true)} />
               <div className="flex gap-[8px] group-[.sidebar]:flex-col">
                 {sortedIntegrations?.length > 0 && <NewPost />}
                 {sortedIntegrations?.length > 0 &&

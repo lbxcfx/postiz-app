@@ -22,6 +22,7 @@ import { Response } from 'express';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import { ShortLinkService } from '@gitroom/nestjs-libraries/short-linking/short.link.service';
 import { CreateTagDto } from '@gitroom/nestjs-libraries/dtos/posts/create.tag.dto';
+import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import {
   AuthorizationActions,
   Sections,
@@ -33,7 +34,8 @@ export class PostsController {
   constructor(
     private _postsService: PostsService,
     private _agentGraphService: AgentGraphService,
-    private _shortLinkService: ShortLinkService
+    private _shortLinkService: ShortLinkService,
+    private _integrationService: IntegrationService
   ) {}
 
   @Get('/:id/statistics')
@@ -130,8 +132,8 @@ export class PostsController {
     @GetOrgFromRequest() org: Organization,
     @Body() rawBody: any
   ) {
-    console.log(JSON.stringify(rawBody, null, 2));
-    const body = await this._postsService.mapTypeToPost(rawBody, org.id);
+    const preparedBody = await this.applyDefaultXhsIntegration(org.id, rawBody);
+    const body = await this._postsService.mapTypeToPost(preparedBody, org.id);
     return this._postsService.createPost(org.id, body);
   }
 
@@ -182,5 +184,88 @@ export class PostsController {
     @Body() body: { content: string; len: number }
   ) {
     return this._postsService.separatePosts(body.content, body.len);
+  }
+
+  private async applyDefaultXhsIntegration(orgId: string, rawBody: any) {
+    if (!rawBody || typeof rawBody !== 'object' || !Array.isArray(rawBody.posts)) {
+      return rawBody;
+    }
+
+    const integrations = await this._integrationService.getIntegrationsList(orgId);
+    const integrationById = new Map(
+      integrations.map((item) => [item.id, item.providerIdentifier || ''])
+    );
+
+    const hasXhsPost = rawBody.posts.some((post: any) => {
+      const integrationId = String(post?.integration?.id || '').trim();
+      if (!integrationId) {
+        return false;
+      }
+      return this.isXhsProvider(integrationById.get(integrationId) || '');
+    });
+
+    const hasMissingIntegration = rawBody.posts.some(
+      (post: any) => !post?.integration?.id
+    );
+
+    const hasUnknownIntegration = rawBody.posts.some((post: any) => {
+      const integrationId = String(post?.integration?.id || '').trim();
+      if (!integrationId) {
+        return false;
+      }
+      return !integrationById.has(integrationId);
+    });
+
+    if (!hasMissingIntegration && !hasXhsPost && !hasUnknownIntegration) {
+      return rawBody;
+    }
+
+    const defaultXhsIntegration =
+      await this._integrationService.syncXhsIntegrationFromMaterialsLogin(orgId);
+
+    if (!defaultXhsIntegration?.id) {
+      return rawBody;
+    }
+
+    return {
+      ...rawBody,
+      posts: rawBody.posts.map((post: any) => ({
+        ...post,
+        integration: {
+          id: this.resolveIntegrationIdForPost(
+            post,
+            integrationById,
+            defaultXhsIntegration.id
+          ),
+        },
+      })),
+    };
+  }
+
+  private resolveIntegrationIdForPost(
+    post: any,
+    integrationById: Map<string, string>,
+    defaultXhsIntegrationId: string
+  ) {
+    const currentId = String(post?.integration?.id || '').trim();
+    if (!currentId) {
+      return defaultXhsIntegrationId;
+    }
+
+    const providerIdentifier = integrationById.get(currentId);
+    if (!providerIdentifier) {
+      return defaultXhsIntegrationId;
+    }
+
+    if (this.isXhsProvider(providerIdentifier)) {
+      return defaultXhsIntegrationId;
+    }
+
+    return currentId;
+  }
+
+  private isXhsProvider(providerIdentifier: string) {
+    const id = String(providerIdentifier || '').toLowerCase();
+    return id.includes('xiaohongshu') || id === 'xhs';
   }
 }

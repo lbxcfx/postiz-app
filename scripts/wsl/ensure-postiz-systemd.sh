@@ -127,7 +127,7 @@ User=${RUN_USER}
 WorkingDirectory=${WORKDIR}
 Environment=PATH=${SYSTEM_PATH}
 Environment=NODE_OPTIONS=--max-old-space-size=3072
-ExecStart=${PNPM_BIN} --filter ./apps/backend run start
+ExecStart=${PNPM_BIN} --filter ./apps/backend run dev
 Restart=always
 RestartSec=2
 TimeoutStopSec=20
@@ -179,6 +179,8 @@ EOF
 
 POSTIZ_WORKDIR="${WORKDIR}" POSTIZ_RUN_USER="${RUN_USER}" \
   bash "${WORKDIR}/scripts/wsl/ensure-mediacrawler-systemd.sh"
+POSTIZ_WORKDIR="${WORKDIR}" POSTIZ_RUN_USER="${RUN_USER}" \
+  bash "${WORKDIR}/scripts/wsl/ensure-social-auto-upload-systemd.sh"
 
 systemctl daemon-reload
 systemctl enable \
@@ -186,6 +188,7 @@ systemctl enable \
   postiz-dev-backend.service \
   postiz-dev-orchestrator.service \
   postiz-dev-frontend.service \
-  postiz-dev-mediacrawler.service >/dev/null
+  postiz-dev-mediacrawler.service \
+  postiz-dev-social-auto-upload.service >/dev/null
 
 echo "[ensure-postiz-systemd] Installed services with workdir=${WORKDIR}"

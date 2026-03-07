@@ -302,3 +302,45 @@ wsl -d Ubuntu -u root -- systemctl restart postiz-dev-mediacrawler.service
 wsl -d Ubuntu -u root -- systemctl restart postiz-dev-backend.service
 wsl -d Ubuntu -u root -- systemctl restart postiz-dev-frontend.service
 ```
+
+## 9. 2026-02-20 启动方式更新（当前执行标准）
+
+### 9.1 脚本名确认
+
+- 正确脚本名：`run-keepalive.cmd`
+- 错误写法：`run_keepalive.cmd`（不存在）
+
+### 9.2 Codex 当前使用的启动命令（推荐）
+
+```cmd
+run-keepalive.cmd --once
+```
+
+说明：
+- 会自动同步代码到 WSL 运行目录；
+- 自动安装依赖、构建 backend/orchestrator；
+- 自动重启 5 个 systemd 服务；
+- 适合“更新代码后立即生效”场景。
+
+### 9.3 常驻模式启动（双击或命令行）
+
+```cmd
+run-keepalive.cmd
+```
+
+说明：会保持窗口常驻，避免 WSL 会话退出导致服务掉线。
+
+### 9.4 完全手动启动命令（不依赖 cmd 脚本）
+
+```cmd
+wsl -d Ubuntu -u root -- bash -lc "set -e; POSTIZ_WORKDIR=/mnt/f/postiz-app bash /mnt/f/postiz-app/scripts/wsl/ensure-postiz-systemd.sh; systemctl restart postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service; systemctl is-active postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service"
+```
+
+### 9.5 手动检查命令
+
+```cmd
+wsl -d Ubuntu -u root -- systemctl is-active postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service
+wsl -d Ubuntu -u root -- journalctl -u postiz-dev-frontend.service -n 120 --no-pager
+wsl -d Ubuntu -u root -- journalctl -u postiz-dev-backend.service -n 120 --no-pager
+wsl -d Ubuntu -u root -- journalctl -u postiz-dev-mediacrawler.service -n 120 --no-pager
+```

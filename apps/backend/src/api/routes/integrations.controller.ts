@@ -88,6 +88,12 @@ export class IntegrationsController {
 
   @Get('/list')
   async getIntegrationList(@GetOrgFromRequest() org: Organization) {
+    try {
+      await this._integrationService.syncXhsIntegrationFromMaterialsLogin(org.id);
+    } catch (error) {
+      console.warn('syncXhsIntegrationFromMaterialsLogin failed:', error);
+    }
+
     return {
       integrations: await Promise.all(
         (

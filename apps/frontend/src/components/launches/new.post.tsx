@@ -6,7 +6,10 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { SetSelectionModal } from '@gitroom/frontend/components/launches/calendar';
 import { AddEditModal } from '@gitroom/frontend/components/new-launch/add.edit.modal';
-import { ModalWrapperComponent } from '@gitroom/frontend/components/new-launch/modal.wrapper.component';
+import {
+  isXhsIdentifier,
+  pickDefaultXhsIntegration,
+} from '@gitroom/frontend/components/launches/helpers/xhs.integration.match';
 
 export const NewPost = () => {
   const fetch = useFetch();
@@ -16,6 +19,24 @@ export const NewPost = () => {
 
   const createAPost = useCallback(async () => {
     const date = (await (await fetch('/posts/find-slot')).json()).date;
+    let materialsLoginStatus: Record<string, unknown> | null = null;
+    try {
+      materialsLoginStatus = await (
+        await fetch('/materials/login-status?platform=xhs', { method: 'GET' })
+      ).json();
+    } catch {
+      materialsLoginStatus = null;
+    }
+
+    const xhsIntegrations = integrations.filter((integration) =>
+      isXhsIdentifier(integration?.identifier)
+    );
+    const defaultXhsChannel = xhsIntegrations.length
+      ? pickDefaultXhsIntegration(
+          xhsIntegrations as any[],
+          materialsLoginStatus || null
+        ) || xhsIntegrations[0].id
+      : integrations[0]?.id || '';
 
     const set: any = !sets.length
       ? undefined
@@ -64,6 +85,12 @@ export const NewPost = () => {
             ...p,
           }))}
           {...(set?.content ? { set: JSON.parse(set.content) } : {})}
+          {...(defaultXhsChannel
+            ? {
+                selectedChannels: [defaultXhsChannel],
+                focusedChannel: defaultXhsChannel,
+              }
+            : {})}
           reopenModal={createAPost}
           mutate={reloadCalendarView}
           integrations={integrations}
@@ -73,7 +100,7 @@ export const NewPost = () => {
       size: '80%',
       title: ``,
     });
-  }, [integrations, sets]);
+  }, [fetch, integrations, modal, reloadCalendarView, sets, t]);
   return (
     <button
       onClick={createAPost}

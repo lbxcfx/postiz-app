@@ -5,7 +5,6 @@ import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
-import { usePathname } from 'next/navigation';
 
 interface MenuItemInterface {
   name: string;
@@ -19,7 +18,6 @@ interface MenuItemInterface {
 export const useMenuItem = () => {
   const { isGeneral } = useVariables();
   const t = useT();
-  const pathname = usePathname();
 
   const firstMenu = [
     {
@@ -112,7 +110,7 @@ export const useMenuItem = () => {
           />
         </svg>
       ),
-      path: pathname.startsWith('/creation') ? '/creation?schedule=1' : '/launches',
+      path: '/launches',
     },
     {
       name: t('factory_analysis', 'Analysis'),

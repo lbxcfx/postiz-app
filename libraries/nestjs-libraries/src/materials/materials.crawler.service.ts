@@ -178,6 +178,9 @@ export class MediaCrawlerService {
     recommendation: 'headless' | 'headed';
     message: string;
     cookies_found?: string[];
+    user_data_dir?: string;
+    cookies_db?: string;
+    cdp_mode?: boolean;
   }> {
     try {
       const url = this.normalizeUrl(`/api/crawler/login-status/${platform}`);

@@ -127,6 +127,7 @@ export async function postWorkflow({
 
   // iterate over the posts
   for (let i = 0; i < postsList.length; i++) {
+    let postedSuccessfully = false;
     // this is a small trick to repeat an action in case of token refresh
     while (true) {
       try {
@@ -163,6 +164,7 @@ export async function postWorkflow({
         );
 
         // break the current while to move to the next post
+        postedSuccessfully = true;
         break;
       } catch (err) {
         // if token refresh is needed, do it and repeat
@@ -206,6 +208,20 @@ export async function postWorkflow({
         return false;
       }
     }
+
+    if (!postedSuccessfully) {
+      return false;
+    }
+  }
+
+  if (!postsResults[0]?.postId) {
+    await changeState(
+      postsList[0].id,
+      'ERROR',
+      new Error('Publish returned no postId'),
+      postsList
+    );
+    return false;
   }
 
   // send notification on a sucessful post

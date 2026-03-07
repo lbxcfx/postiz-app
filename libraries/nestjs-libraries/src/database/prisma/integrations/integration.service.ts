@@ -25,12 +25,17 @@ import utc from 'dayjs/plugin/utc';
 import { AutopostRepository } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.repository';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { TemporalService } from 'nestjs-temporal-core';
+import { MediaCrawlerService } from '@gitroom/nestjs-libraries/materials/materials.crawler.service';
 
 dayjs.extend(utc);
 
 @Injectable()
 export class IntegrationService {
   private storage = UploadFactory.createStorage();
+  private readonly chinaSocialServiceUrl = (
+    process.env.CHINA_SOCIAL_SERVICE_URL || 'http://localhost:5409'
+  ).replace(/\/+$/, '');
+
   constructor(
     private _integrationRepository: IntegrationRepository,
     private _autopostsRepository: AutopostRepository,
@@ -38,7 +43,8 @@ export class IntegrationService {
     private _notificationService: NotificationService,
     @Inject(forwardRef(() => RefreshIntegrationService))
     private _refreshIntegrationService: RefreshIntegrationService,
-    private _temporalService: TemporalService
+    private _temporalService: TemporalService,
+    private _mediaCrawlerService: MediaCrawlerService
   ) {}
 
   async changeActiveCron(orgId: string) {
@@ -564,5 +570,208 @@ export class IntegrationService {
         ];
       }, [] as number[])
     );
+  }
+
+  async syncXhsIntegrationFromMaterialsLogin(orgId: string) {
+    const existingXhs = (await this.getIntegrationsList(orgId)).filter((item) =>
+      this.isXhsProvider(item.providerIdentifier)
+    );
+    const fallbackIntegration =
+      existingXhs.find((item) => !item.disabled) || existingXhs[0] || null;
+
+    const loginStatus = await this._mediaCrawlerService.checkLoginStatus('xhs');
+    if (!loginStatus?.has_valid_login) {
+      return fallbackIntegration;
+    }
+
+    const userDataDir = String(
+      (loginStatus as { user_data_dir?: string })?.user_data_dir || ''
+    ).trim();
+
+    let accounts = await this.fetchChinaAccounts('xiaohongshu');
+    let picked = await this.pickValidChinaAccount(accounts);
+
+    // If existing account cookies are stale, re-import from the shared materials login profile.
+    if (!picked && userDataDir) {
+      await this.importChinaAccountFromUserDataDir({
+        platform: 'xiaohongshu',
+        userDataDir,
+        accountName: `materials_xhs_${orgId.slice(0, 8)}`,
+      });
+      accounts = await this.fetchChinaAccounts('xiaohongshu');
+      picked = await this.pickValidChinaAccount(accounts);
+    }
+
+    if (!picked) {
+      // Validation endpoint might be unavailable; fall back to ranked local account selection.
+      picked = this.pickChinaAccount(accounts);
+    }
+
+    if (!picked) {
+      return fallbackIntegration;
+    }
+
+    const internalId = String(picked.id || '').trim();
+    const filePath = String(picked.filePath || '').trim();
+    if (!internalId || !filePath) {
+      return fallbackIntegration;
+    }
+
+    const accountName = String(
+      picked.userName || picked.username || picked.account_name || `xhs_${internalId}`
+    ).trim();
+    const token = `${internalId}:${filePath}`;
+
+    const integration = await this.createOrUpdateIntegration(
+      undefined,
+      true,
+      orgId,
+      accountName || `xhs_${internalId}`,
+      undefined,
+      'social',
+      internalId,
+      'xiaohongshu',
+      token,
+      token,
+      3600 * 24 * 30,
+      accountName || `xhs_${internalId}`,
+      false
+    );
+
+    await this._integrationRepository.updateIntegration(integration.id, {
+      disabled: false,
+      refreshNeeded: false,
+      inBetweenSteps: false,
+    });
+
+    return this.getIntegrationById(orgId, integration.id);
+  }
+
+  private isXhsProvider(providerIdentifier: string) {
+    const value = String(providerIdentifier || '').toLowerCase();
+    return value.includes('xiaohongshu') || value === 'xhs';
+  }
+
+  private async fetchChinaAccounts(platform: 'xiaohongshu' | 'douyin') {
+    try {
+      const response = await fetch(
+        `${this.chinaSocialServiceUrl}/api/v1/accounts?platform=${platform}`,
+        { method: 'GET' }
+      );
+      if (!response.ok) {
+        return [] as any[];
+      }
+      const payload = (await response.json()) as {
+        code?: number;
+        data?: any[];
+      };
+      if (!Array.isArray(payload?.data)) {
+        return [] as any[];
+      }
+      return payload.data;
+    } catch {
+      return [] as any[];
+    }
+  }
+
+  private async importChinaAccountFromUserDataDir(input: {
+    platform: 'xiaohongshu' | 'douyin';
+    userDataDir: string;
+    accountName: string;
+  }) {
+    try {
+      const response = await fetch(
+        `${this.chinaSocialServiceUrl}/api/v1/accounts/import-user-data`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            platform: input.platform,
+            user_data_dir: input.userDataDir,
+            account_name: input.accountName,
+          }),
+        }
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const payload = (await response.json()) as {
+        code?: number;
+        data?: Record<string, unknown>;
+      };
+      if (payload?.code !== 200) {
+        return null;
+      }
+      return payload.data || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async validateChinaAccount(accountId: number): Promise<boolean | null> {
+    try {
+      const response = await fetch(
+        `${this.chinaSocialServiceUrl}/api/v1/accounts/${accountId}/validate`,
+        {
+          method: 'POST',
+        }
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const payload = (await response.json()) as {
+        code?: number;
+        data?: { valid?: boolean };
+      };
+      if (payload?.code !== 200 || typeof payload?.data?.valid !== 'boolean') {
+        return null;
+      }
+      return payload.data.valid;
+    } catch {
+      return null;
+    }
+  }
+
+  private async pickValidChinaAccount(accounts: any[]) {
+    const ranked = this.rankChinaAccounts(accounts);
+    let unknownCandidate: any = null;
+
+    for (const candidate of ranked) {
+      const accountId = Number(candidate?.id || 0);
+      if (!accountId) {
+        continue;
+      }
+      const valid = await this.validateChinaAccount(accountId);
+      if (valid === true) {
+        return candidate;
+      }
+      if (valid === null && !unknownCandidate) {
+        unknownCandidate = candidate;
+      }
+    }
+
+    return unknownCandidate;
+  }
+
+  private rankChinaAccounts(accounts: any[]) {
+    const filtered = (accounts || []).filter((item) => {
+      const platform = String(item?.platform || '').toLowerCase();
+      const type = Number(item?.type || 0);
+      const isXhs = platform === 'xiaohongshu' || type === 1;
+      return isXhs && item?.id && item?.filePath;
+    });
+    if (!filtered.length) {
+      return [] as any[];
+    }
+
+    const active = filtered.filter((item) => Number(item?.status || 0) === 1);
+    const source = active.length ? active : filtered;
+    return source.sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0));
+  }
+
+  private pickChinaAccount(accounts: any[]) {
+    return this.rankChinaAccounts(accounts)[0] || null;
   }
 }

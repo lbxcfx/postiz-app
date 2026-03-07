@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/mnt/f/postiz-app/social-auto-upload-main/social-auto-upload-main/sau_backend.py", line 10, in <module>
-    from myUtils.auth import check_cookie
-  File "/mnt/f/postiz-app/social-auto-upload-main/social-auto-upload-main/myUtils/auth.py", line 5, in <module>
-    from playwright.async_api import async_playwright
-ModuleNotFoundError: No module named 'playwright'

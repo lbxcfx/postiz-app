@@ -6,6 +6,7 @@ describe('ContentFactoryActivity analyzeContent', () => {
     const crawler = {} as any;
     const postActivity = {} as any;
     const integrationService = {} as any;
+    const mediaService = {} as any;
 
     const prisma = {
       sourceContent: {
@@ -47,7 +48,8 @@ describe('ContentFactoryActivity analyzeContent', () => {
       prisma,
       postActivity,
       integrationService,
-      analysisService
+      analysisService,
+      mediaService
     );
 
     const output = await activity.analyzeContent({
@@ -94,6 +96,7 @@ describe('ContentFactoryActivity publishContent', () => {
     const integrationService = {
       getIntegrationById: jest.fn().mockResolvedValue({ id: 'int-1' }),
     } as any;
+    const mediaService = {} as any;
 
     const prisma = {
       contentDraft: {
@@ -122,7 +125,8 @@ describe('ContentFactoryActivity publishContent', () => {
       prisma,
       postActivity,
       integrationService,
-      analysisService
+      analysisService,
+      mediaService
     );
 
     await expect(

@@ -1,4 +1,0 @@
-
-> postiz-frontend@1.0.0 dev /mnt/f/postiz-app/apps/frontend
-> dotenv -e ../../.env -- next dev -p 4200
-

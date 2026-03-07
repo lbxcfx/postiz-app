@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "/mnt/f/postiz-app/social-auto-upload-main/social-auto-upload-main/sau_backend.py", line 9, in <module>
-    from flask_cors import CORS
-ModuleNotFoundError: No module named 'flask_cors'

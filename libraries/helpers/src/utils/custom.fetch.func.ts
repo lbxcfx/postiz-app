@@ -12,6 +12,21 @@ const isAbsoluteUrl = (value: string) => /^https?:\/\//i.test(value);
 
 const normalizeBaseUrl = (value?: string | null) => (value || '').trim();
 
+const buildLocalhostFallbackUrls = (requestUrl: string) => {
+  const fallbacks: string[] = [];
+  if (requestUrl.includes('://127.0.0.1')) {
+    fallbacks.push(requestUrl.replace('://127.0.0.1', '://localhost'));
+    fallbacks.push(requestUrl.replace('://127.0.0.1', '://[::1]'));
+  } else if (requestUrl.includes('://localhost')) {
+    fallbacks.push(requestUrl.replace('://localhost', '://127.0.0.1'));
+    fallbacks.push(requestUrl.replace('://localhost', '://[::1]'));
+  } else if (requestUrl.includes('://[::1]')) {
+    fallbacks.push(requestUrl.replace('://[::1]', '://localhost'));
+    fallbacks.push(requestUrl.replace('://[::1]', '://127.0.0.1'));
+  }
+  return Array.from(new Set(fallbacks.filter((url) => url !== requestUrl)));
+};
+
 const resolveRequestUrl = (baseUrl: string, url: string) => {
   const normalizedUrl = (url || '').trim();
   if (!normalizedUrl) {
@@ -89,7 +104,8 @@ export const customFetch = (
             .find((p) => p.includes('impersonate='))
             ?.split('=')[1];
 
-    const fetchRequest = await fetch(resolveRequestUrl(params.baseUrl, url), {
+    const requestUrl = resolveRequestUrl(params.baseUrl, url);
+    const requestInit: RequestInit = {
       ...(secured ? { credentials: 'include' } : {}),
       ...(newRequestObject || options),
       headers: {
@@ -117,7 +133,34 @@ export const customFetch = (
       ...(!options.next && options.cache !== 'force-cache'
         ? { cache: options.cache || 'no-store' }
         : {}),
-    });
+    };
+    let fetchRequest: Response;
+    try {
+      fetchRequest = await fetch(requestUrl, requestInit);
+    } catch (error) {
+      // Local dev fallback: retry localhost/127.0.0.1/[::1] when one bind is unavailable.
+      const fallbackUrls = buildLocalhostFallbackUrls(requestUrl);
+      if (!fallbackUrls.length) {
+        throw error;
+      }
+
+      let lastError = error;
+      let resolved: Response | null = null;
+      for (const fallbackUrl of fallbackUrls) {
+        try {
+          resolved = await fetch(fallbackUrl, requestInit);
+          break;
+        } catch (fallbackError) {
+          lastError = fallbackError;
+        }
+      }
+
+      if (!resolved) {
+        throw lastError;
+      }
+
+      fetchRequest = resolved;
+    }
 
     if (
       !params?.afterRequest ||

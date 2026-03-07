@@ -11,13 +11,13 @@ echo [Postiz] Distro: %WSL_DISTRO%
 
 if /I "%MODE%"=="once" goto once
 
-wsl -d %WSL_DISTRO% -u root -- bash -lc "set -e; POSTIZ_WORKDIR=/mnt/f/postiz-app bash /mnt/f/postiz-app/scripts/wsl/ensure-postiz-systemd.sh; systemctl restart postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service; systemctl is-active postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service; echo '[Postiz] Services are up. Keep this window open to keep WSL alive.'; echo '[Postiz] Frontend: http://localhost:4200/auth'; echo '[Postiz] Backend: http://localhost:3000'; echo '[Postiz] MediaCrawler: http://localhost:8081/docs'; exec tail -f /dev/null"
+wsl -d %WSL_DISTRO% -u root -- bash -lc "set -e; POSTIZ_WORKDIR=/mnt/f/postiz-app bash /mnt/f/postiz-app/scripts/wsl/ensure-postiz-systemd.sh; systemctl restart postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service postiz-dev-social-auto-upload.service; systemctl is-active postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service postiz-dev-social-auto-upload.service; echo '[Postiz] Services are up. Keep this window open to keep WSL alive.'; echo '[Postiz] Frontend: http://localhost:4200/auth'; echo '[Postiz] Backend: http://localhost:3000'; echo '[Postiz] MediaCrawler: http://localhost:8081/docs'; echo '[Postiz] Social Auto Upload: http://localhost:5409/docs'; exec tail -f /dev/null"
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" goto fail
 goto done
 
 :once
-wsl -d %WSL_DISTRO% -u root -- bash -lc "set -e; POSTIZ_WORKDIR=/mnt/f/postiz-app bash /mnt/f/postiz-app/scripts/wsl/ensure-postiz-systemd.sh; systemctl restart postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service; systemctl is-active postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service"
+wsl -d %WSL_DISTRO% -u root -- bash -lc "set -e; POSTIZ_WORKDIR=/mnt/f/postiz-app bash /mnt/f/postiz-app/scripts/wsl/ensure-postiz-systemd.sh; systemctl restart postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service postiz-dev-social-auto-upload.service; systemctl is-active postiz-dev-temporal.service postiz-dev-backend.service postiz-dev-orchestrator.service postiz-dev-frontend.service postiz-dev-mediacrawler.service postiz-dev-social-auto-upload.service"
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" goto fail
 echo [Postiz] Started (once mode).

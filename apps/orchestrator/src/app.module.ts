@@ -7,6 +7,7 @@ import { EmailActivity } from '@gitroom/orchestrator/activities/email.activity';
 import { ContentFactoryActivity } from '@gitroom/orchestrator/activities/content-factory.activity';
 import { MaterialsModule } from '@gitroom/nestjs-libraries/materials/materials.module';
 import { AnalysisService } from '@gitroom/orchestrator/activities/analysis.service';
+import { VideoModule } from '@gitroom/nestjs-libraries/videos/video.module';
 
 const activities = [
   PostActivity,
@@ -19,6 +20,7 @@ const activities = [
   imports: [
     DatabaseModule,
     MaterialsModule,
+    VideoModule,
     getTemporalModule(true, require.resolve('./workflows'), activities),
   ],
   controllers: [],

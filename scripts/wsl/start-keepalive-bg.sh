@@ -13,7 +13,8 @@ systemctl restart \
   postiz-dev-backend.service \
   postiz-dev-orchestrator.service \
   postiz-dev-frontend.service \
-  postiz-dev-mediacrawler.service
+  postiz-dev-mediacrawler.service \
+  postiz-dev-social-auto-upload.service
 
 pkill -f postiz-wsl-keepalive >/dev/null 2>&1 || true
 nohup bash -lc "exec -a postiz-wsl-keepalive tail -f /dev/null" \
@@ -24,6 +25,7 @@ systemctl is-active \
   postiz-dev-backend.service \
   postiz-dev-orchestrator.service \
   postiz-dev-frontend.service \
-  postiz-dev-mediacrawler.service
+  postiz-dev-mediacrawler.service \
+  postiz-dev-social-auto-upload.service
 
 echo "[Postiz] keepalive process started in background."

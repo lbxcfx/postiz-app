@@ -7,6 +7,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -36,7 +37,6 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { ExistingDataContextProvider } from '@gitroom/frontend/components/launches/helpers/use.existing.data';
 import { useDrag, useDrop } from 'react-dnd';
 import { Integration, Post, State, Tags } from '@prisma/client';
-import { useAddProvider } from '@gitroom/frontend/components/launches/add.provider.component';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import isSameOrAfter from 'dayjs/plugin/isSameOrAfter';
@@ -47,6 +47,7 @@ import { extend } from 'dayjs';
 import { isUSCitizen } from './helpers/isuscitizen.utils';
 import { useInterval } from '@mantine/hooks';
 import { StatisticsModal } from '@gitroom/frontend/components/launches/statistics';
+import { MissingReleaseModal } from '@gitroom/frontend/components/launches/missing-release.modal';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import i18next from 'i18next';
 import { AddEditModal } from '@gitroom/frontend/components/new-launch/add.edit.modal';
@@ -54,7 +55,11 @@ import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { newDayjs } from '@gitroom/frontend/components/layout/set.timezone';
-import { useRouter } from 'next/navigation';
+import { Button } from '@gitroom/react/form/button';
+import {
+  isXhsIdentifier,
+  pickDefaultXhsIntegration,
+} from '@gitroom/frontend/components/launches/helpers/xhs.integration.match';
 
 // Extend dayjs with necessary plugins
 extend(isSameOrAfter);
@@ -83,38 +88,159 @@ const convertTimeFormatBasedOnLocality = (time: number) => {
   }
 };
 
-const getCreationScheduleAt = (
-  slotDate: dayjs.Dayjs,
-  display: string
-) => {
-  const now = newDayjs();
-  let target = slotDate.local().second(0).millisecond(0);
-  if (display === 'month') {
-    target = target.hour(10).minute(0);
-  } else {
-    target = target.minute(0);
-  }
-  if (target.isBefore(now.add(2, 'minute'))) {
-    target = now.add(10, 'minute').second(0).millisecond(0);
-  }
-  return target.toDate().toISOString();
-};
-
-export const days = [
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday',
-  'Sunday',
-];
 export const hours = Array.from(
   {
     length: 24,
   },
   (_, i) => i
 );
+
+// Shared hook for post actions (edit, delete, statistics)
+const usePostActions = (onMutate?: () => void) => {
+  const t = useT();
+  const fetch = useFetch();
+  const modal = useModals();
+  const toaster = useToaster();
+  const { integrations, reloadCalendarView } = useCalendar();
+
+  const mutate = useCallback(() => {
+    reloadCalendarView();
+    onMutate?.();
+  }, [reloadCalendarView, onMutate]);
+
+  const editPost = useCallback(
+    (loadPost: any, isDuplicate?: boolean) => async () => {
+      const post = {
+        ...loadPost,
+        publishDate: loadPost.actualDate || loadPost.publishDate,
+      };
+
+      const data = await (await fetch(`/posts/group/${post.group}`)).json();
+      const date = !isDuplicate
+        ? null
+        : (await (await fetch('/posts/find-slot')).json()).date;
+      const publishDate = dayjs
+        .utc(date || data.posts[0].publishDate)
+        .local();
+      const ExistingData = !isDuplicate
+        ? ExistingDataContextProvider
+        : Fragment;
+      modal.openModal({
+        id: 'add-edit-modal',
+        closeOnClickOutside: false,
+        removeLayout: true,
+        closeOnEscape: false,
+        withCloseButton: false,
+        askClose: true,
+        fullScreen: true,
+        classNames: {
+          modal: 'w-[100%] max-w-[1400px] text-textColor',
+        },
+        children: (
+          <ExistingData value={data}>
+            <AddEditModal
+              {...(isDuplicate
+                ? {
+                    onlyValues: data.posts.map(
+                      ({ image, settings, content }: any) => ({
+                        image,
+                        settings,
+                        content,
+                      })
+                    ),
+                  }
+                : {})}
+              allIntegrations={integrations.map((p) => ({ ...p }))}
+              reopenModal={editPost(post)}
+              mutate={mutate}
+              integrations={
+                isDuplicate
+                  ? integrations
+                  : integrations
+                      .slice(0)
+                      .filter((f) => f.id === data.integration)
+                      .map((p) => ({
+                        ...p,
+                        picture: data.integrationPicture,
+                      }))
+              }
+              date={publishDate}
+            />
+          </ExistingData>
+        ),
+        size: '80%',
+        title: ``,
+      });
+    },
+    [integrations, fetch, modal, mutate]
+  );
+
+  const deletePost = useCallback(
+    (post: any) => async () => {
+      if (
+        !(await deleteDialog(
+          t(
+            'are_you_sure_you_want_to_delete_post',
+            'Are you sure you want to delete post?'
+          )
+        ))
+      ) {
+        return;
+      }
+
+      await fetch(`/posts/${post.group}`, {
+        method: 'DELETE',
+      });
+
+      toaster.show(
+        t('post_deleted_successfully', 'Post deleted successfully'),
+        'success'
+      );
+
+      mutate();
+    },
+    [toaster, t, fetch, mutate]
+  );
+
+  const openStatistics = useCallback(
+    (id: string) => () => {
+      modal.openModal({
+        title: t('statistics', 'Statistics'),
+        closeOnClickOutside: true,
+        closeOnEscape: true,
+        withCloseButton: true,
+        classNames: {
+          modal: 'w-[100%] max-w-[1400px]',
+        },
+        children: <StatisticsModal postId={id} />,
+        size: '80%',
+      });
+    },
+    [modal, t]
+  );
+
+  const openMissingRelease = useCallback(
+    (id: string) => () => {
+      modal.openModal({
+        title: t('connect_post', 'Connect Post'),
+        closeOnClickOutside: true,
+        closeOnEscape: true,
+        withCloseButton: true,
+        classNames: {
+          modal: 'w-[100%] max-w-[800px]',
+        },
+        children: (
+          <MissingReleaseModal postId={id} onSuccess={mutate} />
+        ),
+        size: '60%',
+      });
+    },
+    [modal, t, mutate]
+  );
+
+  return { editPost, deletePost, openStatistics, openMissingRelease };
+};
+
 export const DayView = () => {
   const calendar = useCalendar();
   const { integrations, posts, startDate } = calendar;
@@ -197,8 +323,8 @@ export const DayView = () => {
   );
 };
 export const WeekView = () => {
-  const { startDate, endDate } = useCalendar();
-  const t = useT();
+  const { startDate } = useCalendar();
+  const gridRef = useRef<HTMLDivElement | null>(null);
 
   // Use dayjs to get localized day names
   const localizedDays = useMemo(() => {
@@ -217,15 +343,58 @@ export const WeekView = () => {
     }
     return days;
   }, [i18next.resolvedLanguage, startDate]);
+  const now = newDayjs();
+  const currentHour = now.hour();
+  const currentDay = now.format('YYYY-MM-DD');
+  useEffect(() => {
+    const container = gridRef.current;
+    if (!container) {
+      return;
+    }
+
+    const syncPosition = () => {
+      const currentHourEl = container.querySelector(
+        '[data-current-hour="1"]'
+      ) as HTMLElement | null;
+      if (currentHourEl) {
+        container.scrollTop = Math.max(
+          0,
+          currentHourEl.offsetTop -
+            container.clientHeight / 2 +
+            currentHourEl.clientHeight / 2
+        );
+      }
+
+      const currentDayEl = container.querySelector(
+        '[data-current-day="1"]'
+      ) as HTMLElement | null;
+      if (currentDayEl) {
+        container.scrollLeft = Math.max(
+          0,
+          currentDayEl.offsetLeft -
+            container.clientWidth / 2 +
+            currentDayEl.clientWidth / 2
+        );
+      }
+    };
+
+    requestAnimationFrame(syncPosition);
+  }, [startDate, currentDay, currentHour, localizedDays]);
 
   return (
     <div className="flex flex-col text-textColor flex-1">
       <div className="flex-1 relative">
-        <div className="grid [grid-template-columns:136px_repeat(7,_minmax(0,_1fr))] gap-[4px] rounded-[10px] absolute h-full start-0 top-0 w-full overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
+        <div
+          ref={gridRef}
+          className="grid [grid-template-columns:136px_repeat(7,_minmax(0,_1fr))] gap-[4px] rounded-[10px] absolute h-full start-0 top-0 w-full overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor"
+        >
           <div className="z-10 bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0"></div>
-          {localizedDays.map((day, index) => (
+          {localizedDays.map((day) => (
             <div
-              key={day.name}
+              key={day.date.format('YYYY-MM-DD')}
+              data-current-day={
+                day.date.format('YYYY-MM-DD') === currentDay ? '1' : undefined
+              }
               className="p-2 text-center bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0 z-[20]"
             >
               <div className="text-[14px] font-[500] text-newTableText">
@@ -247,17 +416,22 @@ export const WeekView = () => {
           ))}
           {hours.map((hour) => (
             <Fragment key={hour}>
-              <div className="p-2 pe-4 text-center items-center justify-center flex text-[14px] text-newTableText">
+              <div
+                data-current-hour={hour === currentHour ? '1' : undefined}
+                className={clsx(
+                  'p-2 pe-4 text-center items-center justify-center flex text-[14px] text-newTableText',
+                  hour === currentHour &&
+                    'text-newTableTextFocused font-[600]'
+                )}
+              >
                 {convertTimeFormatBasedOnLocality(hour)}
               </div>
-              {localizedDays.map((day, indexDay) => (
+              {localizedDays.map((day) => (
                 <Fragment
                   key={`${startDate}-${day.date.format('YYYY-MM-DD')}-${hour}`}
                 >
                   <div className="relative">
-                    <CalendarColumn
-                      getDate={day.date.hour(hour).startOf('hour')}
-                    />
+                    <CalendarColumn getDate={day.date.hour(hour).startOf('hour')} />
                   </div>
                 </Fragment>
               ))}
@@ -345,11 +519,85 @@ export const MonthView = () => {
     </div>
   );
 };
+export const ListView = () => {
+  const t = useT();
+  const { integrations, loading, listPosts } = useCalendar();
+
+  // Use shared post actions hook
+  const { editPost, deletePost, openStatistics, openMissingRelease } = usePostActions();
+
+  // Group posts by date
+  const groupedPosts = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    listPosts.forEach((post) => {
+      const dateKey = newDayjs(post.publishDate).local().format('YYYY-MM-DD');
+      if (!groups[dateKey]) {
+        groups[dateKey] = [];
+      }
+      groups[dateKey].push(post);
+    });
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [listPosts]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col flex-1 items-center justify-center">
+        <div className="text-textColor">{t('loading', 'Loading...')}</div>
+      </div>
+    );
+  }
+
+  if (listPosts.length === 0) {
+    return (
+      <div className="flex flex-col flex-1 items-center justify-center">
+        <div className="text-textColor text-[16px]">
+          {t('no_upcoming_posts', 'No upcoming posts scheduled')}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-[10px] flex-1 relative">
+      <div className="absolute start-0 top-0 w-full h-full flex flex-col overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
+        {groupedPosts.map(([dateKey, datePosts]) => (
+          <Fragment key={dateKey}>
+            <div className="text-center text-[14px] min-h-[21px] text-textColor font-[500] mt-[10px]">
+              {newDayjs(dateKey).format(isUSCitizen() ? 'dddd, MMMM D, YYYY' : 'dddd, D MMMM YYYY')}
+            </div>
+            <div className="flex flex-col gap-[10px] mb-[20px] px-[10px]">
+              {datePosts.map((post) => (
+                <CalendarItem
+                  key={post.id}
+                  display="day"
+                  isBeforeNow={false}
+                  date={newDayjs(post.publishDate)}
+                  state={post.state}
+                  statistics={openStatistics(post.id)}
+                  missingRelease={openMissingRelease(post.id)}
+                  editPost={editPost(post, false)}
+                  duplicatePost={editPost(post, true)}
+                  post={post}
+                  integrations={integrations}
+                  deletePost={deletePost(post)}
+                  showTime={true}
+                />
+              ))}
+            </div>
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export const Calendar = () => {
   const { display } = useCalendar();
   return (
     <>
-      {display === 'day' ? (
+      {display === 'list' ? (
+        <ListView />
+      ) : display === 'day' ? (
         <DayView />
       ) : display === 'week' ? (
         <WeekView />
@@ -374,13 +622,22 @@ export const CalendarColumn: FC<{
     changeDate,
     display,
     reloadCalendarView,
-    sets,
     signature,
     loading,
   } = useCalendar();
-  const toaster = useToaster();
   const modal = useModals();
   const fetch = useFetch();
+
+  // Use shared post actions hook
+  const { editPost, deletePost, openStatistics, openMissingRelease } = usePostActions();
+  const availableIntegrations = useMemo(
+    () =>
+      (integrations || []).filter(
+        (integration): integration is Integrations =>
+          !!integration && typeof integration.id === 'string' && !!integration.id
+      ),
+    [integrations]
+  );
   const postList = useMemo(() => {
     return posts.filter((post) => {
       const pList = dayjs.utc(post.publishDate).local();
@@ -436,6 +693,68 @@ export const CalendarColumn: FC<{
     accept: 'post',
     drop: async (item: any) => {
       if (isBeforeNow) return;
+
+      // Find the post to check its state
+      const post = posts.find((p) => p.id === item.id);
+      let action: 'schedule' | 'update' = 'schedule';
+
+      // Check if post is already published or queued in the past
+      if (
+        post &&
+        (post.state === 'PUBLISHED' ||
+          (post.state === 'QUEUE' && dayjs().isAfter(dayjs.utc(post.publishDate))))
+      ) {
+        const whatToDo = await new Promise<'schedule' | 'update' | 'cancel'>(
+          (resolve) => {
+            modal.openModal({
+              title: t('what_do_you_want_to_do', 'What do you want to do?'),
+              children: (
+                <div className="flex flex-col">
+                  <div className="text-[20px] mb-[20px]">
+                    {t(
+                      'post_already_published_drag',
+                      'This post was already published, what do you want to do?'
+                    )}
+                  </div>
+                  <div className="flex w-full gap-[10px]">
+                    <div className="flex-1 flex">
+                      <Button
+                        type="button"
+                        className="flex-1"
+                        onClick={() => {
+                          modal.closeAll();
+                          resolve('update');
+                        }}
+                      >
+                        {t('just_update_post_details', 'Just update the post details')}
+                      </Button>
+                    </div>
+                    <div className="flex-1 flex">
+                      <Button
+                        type="button"
+                        className="flex-1"
+                        onClick={() => {
+                          modal.closeAll();
+                          resolve('schedule');
+                        }}
+                      >
+                        {t('reschedule_post', 'Reschedule the post')}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ),
+              onClose: () => resolve('cancel'),
+            });
+          }
+        );
+
+        if (whatToDo === 'cancel') {
+          return;
+        }
+        action = whatToDo;
+      }
+
       if (!item.interval) {
         changeDate(item.id, getDate);
       }
@@ -443,10 +762,11 @@ export const CalendarColumn: FC<{
         method: 'PUT',
         body: JSON.stringify({
           date: getDate.utc().format('YYYY-MM-DDTHH:mm:ss'),
+          action,
         }),
       });
       if (status !== 500) {
-        if (item.interval) {
+        if (item.interval || action === 'schedule') {
           reloadCalendarView();
           return;
         }
@@ -456,114 +776,64 @@ export const CalendarColumn: FC<{
     collect: (monitor) => ({
       canDrop: isBeforeNow ? false : !!monitor.canDrop() && !!monitor.isOver(),
     }),
-  }));
+  }), [posts]);
 
-  const editPost = useCallback(
+  const getDefaultXhsChannel = useCallback(
     (
-        loadPost: Post & {
-          integration: Integration;
-        },
-        isDuplicate?: boolean
-      ) =>
-      async () => {
-        const post = {
-          ...loadPost,
-          // @ts-ignore
-          publishDate: loadPost.actualDate || loadPost.publishDate,
-        };
+      integrationCandidates: Integrations[],
+      materialsLoginStatus?: Record<string, unknown> | null
+    ) => {
+      const xhsIntegrations = integrationCandidates.filter((integration) => {
+        return isXhsIdentifier(integration?.identifier);
+      });
 
-        const data = await (await fetch(`/posts/group/${post.group}`)).json();
-        const date = !isDuplicate
-          ? null
-          : (await (await fetch('/posts/find-slot')).json()).date;
-        const publishDate = dayjs
-          .utc(date || data.posts[0].publishDate)
-          .local();
-        const ExistingData = !isDuplicate
-          ? ExistingDataContextProvider
-          : Fragment;
-        modal.openModal({
-          id: 'add-edit-modal',
-          closeOnClickOutside: false,
-          removeLayout: true,
-          closeOnEscape: false,
-          withCloseButton: false,
-          askClose: true,
-          fullScreen: true,
-          classNames: {
-            modal: 'w-[100%] max-w-[1400px] text-textColor',
-          },
-          children: (
-            <ExistingData value={data}>
-              <AddEditModal
-                {...(isDuplicate
-                  ? {
-                      onlyValues: data.posts.map(
-                        ({ image, settings, content }: any) => {
-                          return {
-                            image,
-                            settings,
-                            content,
-                          };
-                        }
-                      ),
-                    }
-                  : {})}
-                allIntegrations={integrations.map((p) => ({
-                  ...p,
-                }))}
-                reopenModal={editPost(post)}
-                mutate={reloadCalendarView}
-                integrations={
-                  isDuplicate
-                    ? integrations
-                    : integrations
-                        .slice(0)
-                        .filter((f) => f.id === data.integration)
-                        .map((p) => ({
-                          ...p,
-                          picture: data.integrationPicture,
-                        }))
-                }
-                date={publishDate}
-              />
-            </ExistingData>
-          ),
-          size: '80%',
-          title: ``,
-        });
-      },
-    [integrations]
+      if (!xhsIntegrations.length) {
+        return integrationCandidates[0]?.id || null;
+      }
+
+      return (
+        pickDefaultXhsIntegration(
+          xhsIntegrations as any[],
+          materialsLoginStatus || null
+        ) || xhsIntegrations[0].id
+      );
+    },
+    []
   );
 
   const addModal = useCallback(async () => {
-    const set: any = !sets.length
-      ? undefined
-      : await new Promise((resolve) => {
-          modal.openModal({
-            title: t('select_set', 'Select a Set'),
-            closeOnClickOutside: true,
-            askClose: true,
-            closeOnEscape: true,
-            withCloseButton: true,
-            onClose: () => resolve('exit'),
-            children: (
-              <SetSelectionModal
-                sets={sets}
-                onSelect={(selectedSet) => {
-                  resolve(selectedSet);
-                  modal.closeAll();
-                }}
-                onContinueWithoutSet={() => {
-                  resolve(undefined);
-                  modal.closeAll();
-                }}
-              />
-            ),
-          });
-        });
+    let currentIntegrations = availableIntegrations;
+    if (!currentIntegrations.length) {
+      try {
+        const refreshed = await (await fetch('/integrations/list', { method: 'GET' })).json();
+        const fromServer = Array.isArray(refreshed?.integrations)
+          ? refreshed.integrations
+          : [];
+        currentIntegrations = fromServer.filter(
+          (integration: any) =>
+            integration && typeof integration.id === 'string' && integration.id
+        );
+      } catch {
+        currentIntegrations = [];
+      }
+    }
 
-    if (set === 'exit') return;
+    let materialsLoginStatus: Record<string, unknown> | null = null;
+    try {
+      materialsLoginStatus = await (
+        await fetch('/materials/login-status?platform=xhs', {
+          method: 'GET',
+        })
+      ).json();
+    } catch {
+      materialsLoginStatus = null;
+    }
+
+    const defaultXhsChannel = getDefaultXhsChannel(
+      currentIntegrations,
+      materialsLoginStatus
+    );
+    modal.closeById('add-edit-modal');
 
     modal.openModal({
       id: 'add-edit-modal',
@@ -578,14 +848,20 @@ export const CalendarColumn: FC<{
       },
       children: (
         <AddEditModal
-          allIntegrations={integrations.map((p) => ({
+          allIntegrations={currentIntegrations.map((p) => ({
             ...p,
           }))}
-          integrations={integrations.slice(0).map((p) => ({
+          integrations={currentIntegrations.slice(0).map((p) => ({
             ...p,
           }))}
           mutate={reloadCalendarView}
-          {...(signature?.id && !set
+          {...(defaultXhsChannel
+            ? {
+                selectedChannels: [defaultXhsChannel],
+                focusedChannel: defaultXhsChannel,
+              }
+            : {})}
+          {...(signature?.id
             ? {
                 onlyValues: [
                   {
@@ -602,69 +878,22 @@ export const CalendarColumn: FC<{
               ? newDayjs().add(10, 'minute')
               : getDate
           }
-          {...(set?.content ? { set: JSON.parse(set.content) } : {})}
           reopenModal={() => ({})}
         />
       ),
       size: '80%',
     });
-  }, [integrations, getDate, sets, signature]);
-  const openStatistics = useCallback(
-    (id: string) => () => {
-      modal.openModal({
-        title: t('statistics', 'Statistics'),
-        closeOnClickOutside: true,
-        closeOnEscape: true,
-        withCloseButton: false,
-        classNames: {
-          modal: 'w-[100%] max-w-[1400px]',
-        },
-        children: <StatisticsModal postId={id} />,
-        size: '80%',
-        // title: `Adding posts for ${getDate.format('DD/MM/YYYY HH:mm')}`,
-      });
-    },
-    []
-  );
-
-  const deletePost = useCallback(
-    (post: Post) => async () => {
-      if (
-        !(await deleteDialog(
-          t(
-            'are_you_sure_you_want_to_delete_post',
-            'Are you sure you want to delete post?'
-          )
-        ))
-      ) {
-        return;
-      }
-
-      await fetch(`/posts/${post.group}`, {
-        method: 'DELETE',
-      });
-
-      toaster.show(
-        t('post_deleted_successfully', 'Post deleted successfully'),
-        'success'
-      );
-
-      reloadCalendarView();
-    },
-    [toaster, t]
-  );
-
-  const addProvider = useAddProvider();
-  const router = useRouter();
-  const jumpToCreation = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const scheduleAt = getCreationScheduleAt(getDate, String(display || 'week'));
-      router.push(`/creation?schedule=1&scheduleAt=${encodeURIComponent(scheduleAt)}`);
-    },
-    [display, getDate, router]
-  );
+  }, [
+    getDate,
+    availableIntegrations,
+    getDefaultXhsChannel,
+    modal,
+    randomHour,
+    reloadCalendarView,
+    signature,
+    t,
+    fetch,
+  ]);
 
   return (
     <div
@@ -687,15 +916,6 @@ export const CalendarColumn: FC<{
           canDrop && 'border border-[#612BD3]'
         )}
       >
-        {!isBeforeNow && (
-          <button
-            type="button"
-            className="absolute end-[8px] top-[8px] z-[30] rounded-[6px] border border-tableBorder bg-main/95 px-[8px] py-[3px] text-[11px] text-textColor hover:bg-main"
-            onClick={jumpToCreation}
-          >
-            去Creation编辑
-          </button>
-        )}
         <div
           className={clsx(
             'flex-col text-[12px] pointer w-full flex scrollbar scrollbar-thumb-tableBorder scrollbar-track-secondary',
@@ -722,10 +942,11 @@ export const CalendarColumn: FC<{
                   date={getDate}
                   state={post.state}
                   statistics={openStatistics(post.id)}
+                  missingRelease={openMissingRelease(post.id)}
                   editPost={editPost(post, false)}
                   duplicatePost={editPost(post, true)}
                   post={post}
-                  integrations={integrations}
+                  integrations={availableIntegrations}
                   deletePost={deletePost(post)}
                 />
               </div>
@@ -751,7 +972,7 @@ export const CalendarColumn: FC<{
         {!isBeforeNow && (
           <div
             className="pb-[2.5px] px-[5px] flex-1 flex"
-            onClick={integrations.length ? addModal : addProvider}
+            onClick={addModal}
           >
             <div
               className={clsx(
@@ -778,7 +999,7 @@ export const CalendarColumn: FC<{
                 <div
                   className={`w-full h-full rounded-[10px] py-[10px] flex-wrap hover:border hover:border-seventh flex justify-center items-center gap-[20px] opacity-30 grayscale hover:grayscale-0 hover:opacity-100`}
                 >
-                  {integrations.map((selectedIntegrations) => (
+                  {availableIntegrations.map((selectedIntegrations) => (
                     <div
                       className="relative"
                       key={selectedIntegrations.identifier}
@@ -831,9 +1052,11 @@ const CalendarItem: FC<{
   duplicatePost: () => void;
   deletePost: () => void;
   statistics: () => void;
+  missingRelease?: () => void;
   integrations: Integrations[];
   state: State;
   display: 'day' | 'week' | 'month';
+  showTime?: boolean;
   post: Post & {
     integration: Integration;
     tags: {
@@ -852,11 +1075,10 @@ const CalendarItem: FC<{
     state,
     display,
     deletePost,
+    showTime,
+    missingRelease,
   } = props;
   const { disableXAnalytics } = useVariables();
-  const isPublished = state === 'PUBLISHED';
-  const statusColor = isPublished ? '#ff2442' : '#16a34a';
-  const statusLabel = isPublished ? '已发送' : '未发送';
   const preview = useCallback(() => {
     window.open(`/p/` + post.id + '?share=true', '_blank');
   }, [post]);
@@ -885,23 +1107,24 @@ const CalendarItem: FC<{
     >
       <div
         className={clsx(
-          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px]'
+          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px] bg-btnPrimary'
         )}
         style={{
-          backgroundColor: statusColor,
+          backgroundColor: post?.tags?.[0]?.tag?.color,
         }}
       >
         <div
           className={clsx(
+            post?.tags?.[0]?.tag?.color ? 'mix-blend-difference' : '',
             'group-hover:hidden cursor-pointer'
           )}
         >
-          {statusLabel}
-          {post.tags.length ? ` · ${post.tags.map((p) => p.tag.name).join(', ')}` : ''}
+          {post.tags.map((p) => p.tag.name).join(', ')}
         </div>
         <div
           className={clsx(
-            'hidden group-hover:block hover:underline cursor-pointer'
+            'hidden group-hover:block hover:underline cursor-pointer',
+            post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
           )}
           onClick={duplicatePost}
         >
@@ -909,27 +1132,42 @@ const CalendarItem: FC<{
         </div>
         <div
           className={clsx(
-            'hidden group-hover:block hover:underline cursor-pointer'
+            'hidden group-hover:block hover:underline cursor-pointer',
+            post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
           )}
           onClick={preview}
         >
           <Preview />
         </div>{' '}
-        {post.integration.providerIdentifier === 'x' && disableXAnalytics ? (
+        {((post.integration.providerIdentifier === 'x' && disableXAnalytics) || !post.releaseId) ? (
           <></>
-        ) : (
+        ) : post.releaseId === 'missing' && missingRelease ? (
           <div
             className={clsx(
-              'hidden group-hover:block hover:underline cursor-pointer'
+              'hidden group-hover:block hover:underline cursor-pointer',
+              post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
+            )}
+            onClick={missingRelease}
+          >
+            <Statistics />
+          </div>
+        ) : post.releaseId !== 'missing' ? (
+          <div
+            className={clsx(
+              'hidden group-hover:block hover:underline cursor-pointer',
+              post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
             )}
             onClick={statistics}
           >
             <Statistics />
           </div>
+        ) : (
+          <></>
         )}{' '}
         <div
           className={clsx(
-            'hidden group-hover:block hover:underline cursor-pointer'
+            'hidden group-hover:block hover:underline cursor-pointer',
+            post?.tags?.[0]?.tag?.color && 'mix-blend-difference'
           )}
           onClick={deletePost}
         >
@@ -965,6 +1203,11 @@ const CalendarItem: FC<{
               </div>
             </div>
         </div>
+        {showTime && (
+          <div className="text-textColor/50 text-[12px] whitespace-nowrap flex items-center">
+            {newDayjs(post.publishDate).local().format(isUSCitizen() ? 'hh:mm A' : 'HH:mm')}
+          </div>
+        )}
       </div>
     </div>
   );

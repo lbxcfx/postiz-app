@@ -1318,22 +1318,46 @@ export class FactoryService {
     let integration = null as Awaited<
       ReturnType<IntegrationService['getIntegrationById']>
     > | null;
+    let sharedXhsIntegration = null as Awaited<
+      ReturnType<IntegrationService['syncXhsIntegrationFromMaterialsLogin']>
+    > | null;
+    try {
+      sharedXhsIntegration =
+        await this.integrationService.syncXhsIntegrationFromMaterialsLogin(orgId);
+    } catch (error) {
+      console.warn('syncXhsIntegrationFromMaterialsLogin failed:', error);
+    }
+
     const requestedIntegrationId = String(input.integrationId || '').trim();
     if (requestedIntegrationId) {
       integration = await this.integrationService.getIntegrationById(
         orgId,
         requestedIntegrationId
       );
+      if (!integration && sharedXhsIntegration?.id) {
+        integration = sharedXhsIntegration;
+      }
       if (!integration) {
         throw this.notFound('FACTORY_INTEGRATION_NOT_FOUND', 'Integration not found');
       }
     } else {
-      const integrations = await this.integrationService.getIntegrationsList(orgId);
-      integration =
-        integrations.find(
-          (item) =>
-            !item.disabled && this.requiresMediaPrecheck(item.providerIdentifier)
-        ) || null;
+      integration = sharedXhsIntegration;
+      if (!integration) {
+        const integrations = await this.integrationService.getIntegrationsList(orgId);
+        integration =
+          integrations.find(
+            (item) =>
+              !item.disabled && this.requiresMediaPrecheck(item.providerIdentifier)
+          ) || null;
+      }
+    }
+
+    if (
+      integration &&
+      sharedXhsIntegration?.id &&
+      this.requiresMediaPrecheck(integration.providerIdentifier)
+    ) {
+      integration = sharedXhsIntegration;
     }
 
     if (!integration) {
@@ -1986,10 +2010,31 @@ export class FactoryService {
       throw this.notFound('FACTORY_PUBLISH_JOB_NOT_FOUND', 'Publish job not found');
     }
 
-    const integration = await this.integrationService.getIntegrationById(
+    let integration = await this.integrationService.getIntegrationById(
       orgId,
       job.integrationId
     );
+    let sharedXhsIntegration = null as Awaited<
+      ReturnType<IntegrationService['syncXhsIntegrationFromMaterialsLogin']>
+    > | null;
+    if (!integration || this.requiresMediaPrecheck(integration.providerIdentifier)) {
+      try {
+        sharedXhsIntegration =
+          await this.integrationService.syncXhsIntegrationFromMaterialsLogin(orgId);
+      } catch (error) {
+        console.warn('syncXhsIntegrationFromMaterialsLogin failed:', error);
+      }
+    }
+    if (!integration && sharedXhsIntegration?.id) {
+      integration = sharedXhsIntegration;
+    }
+    if (
+      integration &&
+      sharedXhsIntegration?.id &&
+      this.requiresMediaPrecheck(integration.providerIdentifier)
+    ) {
+      integration = sharedXhsIntegration;
+    }
     if (!integration) {
       throw this.notFound('FACTORY_INTEGRATION_NOT_FOUND', 'Integration not found');
     }
