@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Logger,
   NotFoundException,
   Post,
   Query,
@@ -16,6 +17,7 @@ import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { Organization } from '@prisma/client';
 import {
@@ -64,6 +66,8 @@ interface MaterialAnalysisTriggerRequest {
 @ApiTags('Materials')
 @Controller('/materials')
 export class MaterialsController {
+  private readonly logger = new Logger(MaterialsController.name);
+
   constructor(
     private readonly queue: MaterialsQueueService,
     private readonly events: MaterialsEventsService,
@@ -712,16 +716,29 @@ export class MaterialsController {
     const referer = refererMap[platform] || refererMap.xhs;
 
     try {
+      const cacheDir = path.join(process.cwd(), 'uploads', 'materials-cache');
+      if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+      }
+      const hash = createHash('md5').update(decodedUrl).digest('hex');
+      const guessedExt = this.getExtensionFromUrl(decodedUrl);
+      const guessedCachePath = path.join(cacheDir, `${hash}${guessedExt || '.bin'}`);
+      if (fs.existsSync(guessedCachePath)) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        return res.sendFile(guessedCachePath);
+      }
+
       const response = await fetch(decodedUrl, {
         headers: {
           'Referer': referer,
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'Accept': '*/*',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
           'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
           'sec-ch-ua-mobile': '?0',
           'sec-ch-ua-platform': '"Windows"',
-          'sec-fetch-dest': 'image',
+          'sec-fetch-dest': 'empty',
           'sec-fetch-mode': 'no-cors',
           'sec-fetch-site': 'cross-site',
         },
@@ -733,19 +750,58 @@ export class MaterialsController {
 
       // Get content type from response
       const contentType = response.headers.get('content-type') || 'image/jpeg';
+      const extFromType = this.getExtensionFromContentType(contentType);
+      const finalCachePath = path.join(
+        cacheDir,
+        `${hash}${extFromType || guessedExt || '.bin'}`
+      );
 
-      // Stream the response
+      const buffer = await response.arrayBuffer();
+      const payload = Buffer.from(buffer);
+      try {
+        if (!fs.existsSync(finalCachePath)) {
+          fs.writeFileSync(finalCachePath, payload);
+        }
+      } catch (cacheError) {
+        this.logger.warn(
+          `Failed to persist materials media cache for ${decodedUrl}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`
+        );
+      }
       res.setHeader('Content-Type', contentType);
       res.setHeader('Access-Control-Allow-Origin', '*');
-
-      // Get the body as buffer and send
-      const buffer = await response.arrayBuffer();
-      res.send(Buffer.from(buffer));
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.send(payload);
     } catch (e) {
       if (e instanceof NotFoundException || e instanceof BadRequestException) {
         throw e;
       }
       throw new NotFoundException('Failed to fetch image');
     }
+  }
+
+  private getExtensionFromUrl(rawUrl: string) {
+    try {
+      const parsed = new URL(rawUrl);
+      const ext = path.extname(parsed.pathname || '').toLowerCase();
+      if (/^\.[a-z0-9]{1,6}$/.test(ext)) {
+        return ext;
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  private getExtensionFromContentType(contentType: string) {
+    const lowered = String(contentType || '').toLowerCase();
+    if (!lowered) return '';
+    if (lowered.includes('video/mp4')) return '.mp4';
+    if (lowered.includes('video/webm')) return '.webm';
+    if (lowered.includes('video/quicktime')) return '.mov';
+    if (lowered.includes('image/jpeg')) return '.jpg';
+    if (lowered.includes('image/png')) return '.png';
+    if (lowered.includes('image/webp')) return '.webp';
+    if (lowered.includes('image/gif')) return '.gif';
+    return '';
   }
 }

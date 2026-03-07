@@ -12,6 +12,7 @@ import {
   AnalysisLayerResult,
   buildMaterialAnalysis,
 } from '@gitroom/frontend/components/materials/materials-analysis.engine';
+import { useCachedMediaUrl } from '@gitroom/frontend/components/materials/materials-media-cache';
 import styles from '@gitroom/frontend/components/materials/materials-analysis-detail.module.scss';
 
 type RemoteAnalysisPayload = {
@@ -385,6 +386,7 @@ export const MaterialsAnalysisDetail = () => {
     item.platform,
     backendUrl
   );
+  const cachedMediaUrl = useCachedMediaUrl(mediaUrl, Boolean(mediaUrl));
   const noteUrl =
     item.platform === 'xhs'
       ? `https://www.xiaohongshu.com/explore/${item.externalId}`
@@ -704,9 +706,21 @@ export const MaterialsAnalysisDetail = () => {
               <div className={styles.mediaBox}>
                 {mediaUrl ? (
                   isVideoUrl(item.contentUrl) ? (
-                    <video className={styles.media} src={mediaUrl} controls muted playsInline preload="metadata" />
+                    <video
+                      className={styles.media}
+                      src={cachedMediaUrl || mediaUrl}
+                      controls
+                      muted
+                      playsInline
+                      preload="metadata"
+                    />
                   ) : (
-                    <img className={styles.media} src={mediaUrl} alt={item.title || 'material'} loading="lazy" />
+                    <img
+                      className={styles.media}
+                      src={cachedMediaUrl || mediaUrl}
+                      alt={item.title || 'material'}
+                      loading="lazy"
+                    />
                   )
                 ) : (
                   <span className={styles.subtitle}>无可预览的媒体资源</span>

@@ -20,6 +20,7 @@ import {
   persistLastMaterialResults,
   persistMaterialDataset,
 } from "./materials-analysis.storage";
+import { warmMediaCache } from "./materials-media-cache";
 
 // ────────────────── Helpers ──────────────────
 
@@ -64,8 +65,39 @@ const toIsoDate = (value: any) => {
 
 const safeInt = (v: any): number => {
   if (v === undefined || v === null || v === "") return 0;
-  const n = typeof v === "string" ? parseInt(v, 10) : Number(v);
-  return Number.isFinite(n) ? n : 0;
+  if (typeof v === "number") {
+    return Number.isFinite(v) ? Math.round(v) : 0;
+  }
+
+  const raw = String(v).trim();
+  if (!raw) return 0;
+
+  const normalized = raw.replace(/,/g, "").replace(/\s+/g, "").replace(/＋/g, "+");
+  const compact = normalized.replace(/\+/g, "");
+  const match = compact.match(/^(-?\d+(?:\.\d+)?)([亿万千wWkKmM])?/);
+  if (match) {
+    const base = Number(match[1]);
+    if (!Number.isFinite(base)) return 0;
+    const unit = match[2] || "";
+    const multiplier =
+      unit === "亿"
+        ? 100000000
+        : unit === "万"
+          ? 10000
+          : unit === "千"
+            ? 1000
+            : unit === "w" || unit === "W"
+              ? 10000
+              : unit === "k" || unit === "K"
+                ? 1000
+                : unit === "m" || unit === "M"
+                  ? 1000000
+                  : 1;
+    return Math.max(0, Math.round(base * multiplier));
+  }
+
+  const parsed = Number(compact);
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0;
 };
 
 const extractResultsItems = (payload: any) => {
@@ -89,38 +121,109 @@ const normalizeQrBase64 = (value?: string) => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const needsProxy = (url: string): boolean => {
+  if (!url) return false;
+  const proxyDomains = [
+    "xhscdn.com",
+    "xiaohongshu.com",
+    "douyinpic.com",
+    "douyinvod.com",
+    "byteimg.com",
+    "pstatp.com",
+  ];
+  try {
+    const parsed = new URL(url);
+    return proxyDomains.some((domain) => parsed.hostname.includes(domain));
+  } catch {
+    return false;
+  }
+};
+
+const getProxiedUrl = (
+  url: string | undefined,
+  platform: string,
+  backendUrl: string
+) => {
+  if (!url || !needsProxy(url) || !backendUrl) return url || "";
+  const encodedUrl = encodeURIComponent(url);
+  return `${backendUrl}/materials/image-proxy?url=${encodedUrl}&platform=${platform}`;
+};
+
+const isLikelyVideoUrl = (url?: string): boolean => {
+  if (!url) return false;
+  return /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(url);
+};
+
 // ────────────────── Data Mapping ──────────────────
 
 const mapToMaterialItems = (items: any[], platform: string): MaterialItem[] => {
   if (!Array.isArray(items)) return [];
   return items.map((item, index) => {
     if (platform === "xhs") {
+      const noteCard = item.note_card || {};
+      const interactInfo = item.interact_info || noteCard.interact_info || {};
       const noteId = item.note_id || item.id || String(index);
       const cover =
         resolveFirstUrl(item.image_list) ||
         resolveFirstUrl(item.images) ||
         resolveFirstUrl(item.image_urls) ||
         resolveFirstUrl(item.cover) ||
-        resolveFirstUrl(item.cover_url);
-      const normalizedCover = normalizeXhsCoverUrl(cover);
-      const mediaUrl = item.video_url || normalizedCover;
+        resolveFirstUrl(item.cover_url) ||
+        resolveFirstUrl(noteCard.image_list) ||
+        resolveFirstUrl(noteCard.images) ||
+        resolveFirstUrl(noteCard.image_urls) ||
+        resolveFirstUrl(noteCard.cover) ||
+        resolveFirstUrl(noteCard.cover_url);
+      const normalizedCover = normalizeXhsCoverUrl(
+        cover ||
+        noteCard.video?.cover?.url_list?.[0] ||
+        noteCard.video?.cover?.url_default
+      );
+      const mediaUrl =
+        item.video_url ||
+        noteCard.video?.media?.stream?.h264?.[0]?.master_url ||
+        normalizedCover;
       return {
         id: noteId,
         platform,
         externalId: noteId,
-        title: item.title || item.note_title || item.desc?.slice(0, 40) || "",
-        desc: item.desc,
+        title:
+          item.title ||
+          item.note_title ||
+          noteCard.display_title ||
+          item.desc?.slice(0, 40) ||
+          noteCard.desc ||
+          "",
+        desc: item.desc || noteCard.desc,
         coverUrl: normalizedCover || item.video_cover || item.avatar,
         contentUrl: mediaUrl,
-        authorName: item.nickname || item.author?.nickname || item.user?.nickname || "未知",
-        authorAvatar: item.avatar || item.user?.avatar,
-        authorUserId: item.user_id || item.user?.user_id || "",
-        createdAt: toIsoDate(item.last_update_time || item.time),
-        likedCount: safeInt(item.liked_count),
-        collectedCount: safeInt(item.collected_count),
-        commentCount: safeInt(item.comment_count),
-        shareCount: safeInt(item.share_count),
-        followerCount: safeInt(item.fans_count || item.follower_count),
+        authorName:
+          item.nickname ||
+          item.author?.nickname ||
+          item.user?.nickname ||
+          noteCard.user?.nickname ||
+          noteCard.user?.nick_name ||
+          "未知",
+        authorAvatar: item.avatar || item.user?.avatar || noteCard.user?.avatar,
+        authorUserId: item.user_id || item.user?.user_id || noteCard.user?.user_id || "",
+        createdAt: toIsoDate(item.last_update_time || item.time || noteCard.last_update_time),
+        likedCount: safeInt(item.liked_count ?? interactInfo.liked_count),
+        collectedCount: safeInt(item.collected_count ?? interactInfo.collected_count),
+        commentCount: safeInt(item.comment_count ?? interactInfo.comment_count),
+        shareCount: safeInt(
+          item.share_count ??
+          item.shared_count ??
+          interactInfo.share_count ??
+          interactInfo.shared_count
+        ),
+        followerCount: safeInt(
+          item.fans_count ||
+          item.follower_count ||
+          item.author?.fans_count ||
+          item.user?.fans_count ||
+          noteCard.user?.fans ||
+          noteCard.user?.follower_count
+        ),
       };
     }
     if (platform === "bili" || platform === "bilibili") {
@@ -269,6 +372,7 @@ export const MaterialsComponent = () => {
   const requestedLoginTypeRef = useRef<"qrcode" | "phone" | null>(null);
   const autoLoginPromptedRef = useRef(false);
   const restoredResultsRef = useRef(false);
+  const warmedMediaUrlsRef = useRef<Set<string>>(new Set());
 
   // ────────── Viral Filtering & Scoring ──────────
 
@@ -337,12 +441,51 @@ export const MaterialsComponent = () => {
     persistLastMaterialResults(rawResults);
   }, [rawResults]);
 
+  useEffect(() => {
+    const candidates = scoredResults
+      .filter((item) => isLikelyVideoUrl(item.contentUrl))
+      .sort((a, b) => (b.viralResult?.score || 0) - (a.viralResult?.score || 0))
+      .slice(0, 8)
+      .map((item) => getProxiedUrl(item.contentUrl, item.platform, backendUrl))
+      .filter(Boolean);
+
+    if (!candidates.length) {
+      return;
+    }
+
+    let disposed = false;
+    void (async () => {
+      for (const url of candidates) {
+        if (disposed) {
+          return;
+        }
+        if (warmedMediaUrlsRef.current.has(url)) {
+          continue;
+        }
+        warmedMediaUrlsRef.current.add(url);
+        await warmMediaCache(url);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+    };
+  }, [backendUrl, scoredResults]);
+
   const handleOpenAnalysis = useCallback(
     (item: MaterialItem) => {
+      const mediaUrl = isLikelyVideoUrl(item.contentUrl)
+        ? item.contentUrl
+        : item.coverUrl;
+      const warmupUrl = getProxiedUrl(mediaUrl, item.platform, backendUrl);
+      if (warmupUrl && !warmedMediaUrlsRef.current.has(warmupUrl)) {
+        warmedMediaUrlsRef.current.add(warmupUrl);
+        void warmMediaCache(warmupUrl);
+      }
       const storageKey = getMaterialStorageKey(item);
       router.push(`/materials/analysis/${encodeURIComponent(storageKey)}`);
     },
-    [router]
+    [backendUrl, router]
   );
 
   // ────────── Cleanup ──────────

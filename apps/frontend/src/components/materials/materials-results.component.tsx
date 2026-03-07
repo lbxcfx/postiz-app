@@ -1,9 +1,11 @@
 
 "use client";
 
+import { useEffect, useState } from "react";
 import { useVariables } from "@gitroom/react/helpers/variable.context";
 import { getViralLevelLabel, getViralLevelColor } from "./viral-score";
 import { MaterialItem } from "./materials.types";
+import { useCachedMediaUrl } from "./materials-media-cache";
 
 /**
  * Check if a URL needs to be proxied (e.g., Xiaohongshu CDN with anti-hotlinking)
@@ -49,6 +51,80 @@ const formatCount = (count?: number): string => {
     if (count >= 10000) return (count / 10000).toFixed(1) + 'w';
     if (count >= 1000) return (count / 1000).toFixed(1) + 'k';
     return String(count);
+};
+
+const MaterialCardMedia = ({
+    displayCoverUrl,
+    fallbackCoverUrl,
+    displayVideoUrl,
+    title,
+}: {
+    displayCoverUrl?: string;
+    fallbackCoverUrl?: string;
+    displayVideoUrl?: string;
+    title?: string;
+}) => {
+    const [useVideoFallback, setUseVideoFallback] = useState(false);
+    const [hideImage, setHideImage] = useState(false);
+    const shouldUseVideo = Boolean(displayVideoUrl) && (!displayCoverUrl || useVideoFallback);
+    const cachedVideoUrl = useCachedMediaUrl(displayVideoUrl, shouldUseVideo);
+
+    useEffect(() => {
+        setUseVideoFallback(false);
+        setHideImage(false);
+    }, [displayCoverUrl, fallbackCoverUrl, displayVideoUrl]);
+
+    if (shouldUseVideo && displayVideoUrl) {
+        return (
+            <video
+                src={cachedVideoUrl || displayVideoUrl}
+                className="w-full object-cover"
+                style={{ minHeight: "120px", maxHeight: "300px" }}
+                controls
+                muted
+                playsInline
+                preload="metadata"
+            />
+        );
+    }
+
+    if (displayCoverUrl && !hideImage) {
+        return (
+            <img
+                src={displayCoverUrl}
+                alt={title || ""}
+                className="w-full object-cover"
+                style={{ minHeight: "120px", maxHeight: "300px" }}
+                loading="lazy"
+                onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    if (
+                        fallbackCoverUrl &&
+                        target.dataset.fallbackApplied !== "1" &&
+                        target.src !== fallbackCoverUrl
+                    ) {
+                        target.dataset.fallbackApplied = "1";
+                        target.src = fallbackCoverUrl;
+                        return;
+                    }
+                    if (displayVideoUrl) {
+                        setUseVideoFallback(true);
+                        return;
+                    }
+                    setHideImage(true);
+                }}
+            />
+        );
+    }
+
+    return (
+        <div
+            className="w-full flex items-center justify-center text-gray-500 text-xs"
+            style={{ height: "160px" }}
+        >
+            {displayVideoUrl ? "视频加载中..." : "暂无封面"}
+        </div>
+    );
 };
 
 export const MaterialsResults = ({
@@ -112,60 +188,12 @@ export const MaterialsResults = ({
                         >
                             {/* Cover Image */}
                             <div className="relative w-full bg-gray-800">
-                                {displayCoverUrl ? (
-                                    <img
-                                        src={displayCoverUrl}
-                                        alt={item.title || ""}
-                                        className="w-full object-cover"
-                                        style={{ minHeight: '120px', maxHeight: '300px' }}
-                                        loading="lazy"
-                                        onError={(e) => {
-                                            const target = e.target as HTMLImageElement;
-                                            if (
-                                                fallbackCoverUrl &&
-                                                target.dataset.fallbackApplied !== '1' &&
-                                                target.src !== fallbackCoverUrl
-                                            ) {
-                                                target.dataset.fallbackApplied = '1';
-                                                target.src = fallbackCoverUrl;
-                                                return;
-                                            }
-                                            target.style.display = 'none';
-                                            const parent = target.parentElement;
-                                            if (parent) {
-                                                parent.innerHTML = '';
-                                                if (displayVideoUrl) {
-                                                    const video = document.createElement('video');
-                                                    video.src = displayVideoUrl;
-                                                    video.controls = true;
-                                                    video.muted = true;
-                                                    video.playsInline = true;
-                                                    video.preload = 'metadata';
-                                                    video.className = 'w-full object-cover';
-                                                    video.style.minHeight = '120px';
-                                                    video.style.maxHeight = '300px';
-                                                    parent.appendChild(video);
-                                                    return;
-                                                }
-                                                parent.innerHTML = `<div class="w-full flex items-center justify-center text-gray-500 text-xs" style="height:160px">图片加载失败</div>`;
-                                            }
-                                        }}
-                                    />
-                                ) : displayVideoUrl ? (
-                                    <video
-                                        src={displayVideoUrl}
-                                        className="w-full object-cover"
-                                        style={{ minHeight: '120px', maxHeight: '300px' }}
-                                        controls
-                                        muted
-                                        playsInline
-                                        preload="metadata"
-                                    />
-                                ) : (
-                                    <div className="w-full flex items-center justify-center text-gray-500 text-xs" style={{ height: '160px' }}>
-                                        暂无封面
-                                    </div>
-                                )}
+                                <MaterialCardMedia
+                                    displayCoverUrl={displayCoverUrl}
+                                    fallbackCoverUrl={fallbackCoverUrl}
+                                    displayVideoUrl={displayVideoUrl}
+                                    title={item.title}
+                                />
 
                                 {/* Viral Badge */}
                                 {viralLabel && (
