@@ -121,6 +121,7 @@ class LoginStatusResponse(BaseModel):
     recommendation: Literal["headless", "headed"]
     message: str
     cookies_found: Optional[list] = None
+    last_modified: Optional[str] = None
     user_data_dir: Optional[str] = None
     cookies_db: Optional[str] = None
     cdp_mode: Optional[bool] = None

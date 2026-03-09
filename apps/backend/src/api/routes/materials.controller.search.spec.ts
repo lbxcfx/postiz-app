@@ -8,6 +8,7 @@ describe('MaterialsController search history behavior', () => {
     const events = {} as any;
     const crawler = {
       readFile: jest.fn(),
+      listFiles: jest.fn().mockResolvedValue([]),
     } as any;
     const materials = {
       buildQueryHash: jest.fn().mockReturnValue('query-hash'),
@@ -67,6 +68,7 @@ describe('MaterialsController search history behavior', () => {
       resultPath: '/tmp/cached.json',
       cachedAt: '2026-02-21T00:00:00.000Z',
     });
+    crawler.listFiles.mockResolvedValue([{ path: '/tmp/cached.json' }]);
     crawler.readFile.mockResolvedValue({
       data: [{ id: 'x' }, { id: 'y' }],
       total: 2,
@@ -88,6 +90,37 @@ describe('MaterialsController search history behavior', () => {
     expect(result.historyResults).toEqual({
       data: [{ id: 'x' }, { id: 'y' }],
       total: 2,
+    });
+  });
+
+  it('falls back to cached preview when cached result path is stale', async () => {
+    const { controller, materials, crawler, queue } = buildController();
+    materials.resolveKeywordResults.mockResolvedValue(null);
+    materials.getCachedResult.mockResolvedValue({
+      queryHash: 'query-hash',
+      resultPath: '/tmp/missing.json',
+      count: 1,
+      preview: [{ id: 'cached-preview' }],
+      cachedAt: '2026-02-21T00:00:00.000Z',
+    });
+    crawler.listFiles.mockResolvedValue([{ path: '/tmp/other.json' }]);
+
+    const result = await controller.search(
+      { id: 'org-1' } as any,
+      {
+        platform: 'xhs',
+        keywords: '鍖荤編',
+        incremental: true,
+      } as any
+    );
+
+    expect(queue.enqueueJob).toHaveBeenCalledTimes(1);
+    expect(crawler.readFile).not.toHaveBeenCalled();
+    expect(materials.clearCachedResult).not.toHaveBeenCalled();
+    expect(result.historyCount).toBe(1);
+    expect(result.historyResults).toEqual({
+      data: [{ id: 'cached-preview' }],
+      total: 1,
     });
   });
 

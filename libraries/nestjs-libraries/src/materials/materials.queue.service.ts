@@ -73,6 +73,11 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
   private readonly dlqName: string;
   private readonly logsForwardingEnabled: boolean;
   private readonly cancelKeyPrefix = 'materials:cancel:';
+  private readonly loginInvalidKeyPrefix = 'materials:login-invalid:';
+  private readonly loginInvalidTtlSec = this.parseNumber(
+    process.env.MATERIALS_LOGIN_INVALID_TTL_SEC,
+    60 * 60 * 24
+  );
 
   constructor(
     private readonly crawler: MediaCrawlerService,
@@ -139,6 +144,10 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       const jobId = this.getJobId(job);
+      if ((error?.message || '').toLowerCase().includes('login required')) {
+        await this.markLoginInvalid(job.data.platform, 'worker_failed');
+      }
+      await this.stopOrphanCrawlerForJob(jobId);
       const isManualStop = (error?.message || '').includes('任务已手动停止');
       await ioRedis.del(this.cancelKeyPrefix + jobId);
       const payload: MaterialsEventPayload = {
@@ -246,6 +255,48 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Materials queue is not initialized.');
     }
     return this.queue.getJob(jobId);
+  }
+
+  async isLoginInvalid(platform: MediaCrawlerPlatform) {
+    const info = await this.getLoginInvalidInfo(platform);
+    return info.invalid;
+  }
+
+  async getLoginInvalidInfo(platform: MediaCrawlerPlatform): Promise<{
+    invalid: boolean;
+    markedAtMs?: number;
+    reason?: string;
+  }> {
+    const key = this.getLoginInvalidKey(platform);
+    const value = await ioRedis.get(key);
+    if (!value) {
+      return { invalid: false };
+    }
+    if (value === '1') {
+      return { invalid: true };
+    }
+    try {
+      const parsed = JSON.parse(value) as {
+        markedAt?: number;
+        reason?: string;
+      };
+      const markedAtMs = Number(parsed?.markedAt);
+      return {
+        invalid: true,
+        markedAtMs: Number.isFinite(markedAtMs) ? markedAtMs : undefined,
+        reason: parsed?.reason,
+      };
+    } catch {
+      const asNumber = Number(value);
+      return {
+        invalid: true,
+        markedAtMs: Number.isFinite(asNumber) ? asNumber : undefined,
+      };
+    }
+  }
+
+  async clearLoginInvalidMark(platform: MediaCrawlerPlatform) {
+    await this.clearLoginInvalid(platform, 'status_probe_valid');
   }
 
   async stopJob(jobId: string) {
@@ -448,6 +499,19 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
           loginSuccessDetectedAtMs = Date.now();
         }
       }
+      if (!isLoginJob && logState.loginRequired) {
+        await this.markLoginInvalid(job.data.platform, 'monitor_login_required');
+        try {
+          await this.crawler.stopCrawl();
+        } catch (error) {
+          this.logger.warn(
+            `[monitorCrawler] failed to stop crawler after login-required, job=${jobId}, reason=${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        throw new UnrecoverableError(
+          'Login required: please complete platform login (QR/SMS) and retry search'
+        );
+      }
 
       if (status.status === 'running') {
         sawRunning = true;
@@ -520,6 +584,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
         const loginStatus = await this.crawler.checkLoginStatus(job.data.platform);
         latestMessage = loginStatus.message || '';
         if (loginStatus.has_valid_login) {
+          await this.clearLoginInvalid(job.data.platform, 'login_verified');
           this.emitEvent(this.getJobId(job), {
             type: 'login_success',
             platform: job.data.platform,
@@ -593,6 +658,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.downloadAssets(resolved.file.path, this.getJobId(job));
+    await this.clearLoginInvalid(job.data.platform, 'search_succeeded');
 
     // Reload data after download updates
     if (fs.existsSync(resolved.file.path)) {
@@ -628,14 +694,15 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     platform: MediaCrawlerPlatform
   ) {
     if (!this.logsForwardingEnabled) {
-      return { lastLogId, loginSuccess: false };
+      return { lastLogId, loginSuccess: false, loginRequired: false };
     }
     if (!jobId) {
-      return { lastLogId, loginSuccess: false };
+      return { lastLogId, loginSuccess: false, loginRequired: false };
     }
     const logs = await this.crawler.getLogs();
     const newLogs = logs.filter((log) => log.id > lastLogId);
     let sawLoginSuccess = false;
+    let sawLoginRequired = false;
     for (const log of newLogs) {
       if (log.client_job_id && log.client_job_id !== jobId) {
         continue;
@@ -654,6 +721,7 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
           progress: 0.2,
           message: 'Login required',
         });
+        sawLoginRequired = true;
         continue;
       }
       if (this.isSmsRequiredMessage(log.message)) {
@@ -687,9 +755,14 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
       return {
         lastLogId: newLogs[newLogs.length - 1].id,
         loginSuccess: sawLoginSuccess,
+        loginRequired: sawLoginRequired,
       };
     }
-    return { lastLogId, loginSuccess: sawLoginSuccess };
+    return {
+      lastLogId,
+      loginSuccess: sawLoginSuccess,
+      loginRequired: sawLoginRequired,
+    };
   }
 
   private async cleanupZombieCrawler() {
@@ -958,6 +1031,74 @@ export class MaterialsQueueService implements OnModuleInit, OnModuleDestroy {
     }
     const cancelled = await ioRedis.get(this.cancelKeyPrefix + jobId);
     return cancelled === '1';
+  }
+
+  private getLoginInvalidKey(platform: MediaCrawlerPlatform) {
+    return `${this.loginInvalidKeyPrefix}${platform}`;
+  }
+
+  private async markLoginInvalid(
+    platform: MediaCrawlerPlatform,
+    reason: string
+  ) {
+    try {
+      const payload = JSON.stringify({
+        markedAt: Date.now(),
+        reason,
+      });
+      await ioRedis.set(
+        this.getLoginInvalidKey(platform),
+        payload,
+        'EX',
+        this.loginInvalidTtlSec
+      );
+      this.logger.warn(
+        `[login-state] marked invalid platform=${platform} reason=${reason}`
+      );
+    } catch (error) {
+      this.logger.warn(
+        `[login-state] failed to mark invalid platform=${platform}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private async clearLoginInvalid(
+    platform: MediaCrawlerPlatform,
+    reason: string
+  ) {
+    try {
+      await ioRedis.del(this.getLoginInvalidKey(platform));
+      this.logger.log(
+        `[login-state] cleared invalid mark platform=${platform} reason=${reason}`
+      );
+    } catch (error) {
+      this.logger.warn(
+        `[login-state] failed to clear invalid mark platform=${platform}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private async stopOrphanCrawlerForJob(jobId: string) {
+    if (!jobId) {
+      return;
+    }
+    try {
+      const status = await this.crawler.getStatus();
+      if (status.status !== 'running') {
+        return;
+      }
+      if (status.client_job_id && status.client_job_id !== jobId) {
+        return;
+      }
+      this.logger.warn(
+        `[worker.failed] stopping orphan crawler process for failed job ${jobId}`
+      );
+      await this.crawler.stopCrawl();
+    } catch (error) {
+      this.logger.warn(
+        `[worker.failed] unable to stop orphan crawler for job ${jobId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   private async downloadAssets(jsonPath: string, jobId: string) {

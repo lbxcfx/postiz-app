@@ -63,6 +63,10 @@ interface MaterialAnalysisTriggerRequest {
   force?: boolean;
 }
 
+interface MaterialAnalysisCancelRequest {
+  jobId?: string;
+}
+
 @ApiTags('Materials')
 @Controller('/materials')
 export class MaterialsController {
@@ -163,6 +167,37 @@ export class MaterialsController {
           await this.materials.clearCachedResult(queryHash);
         } else {
           try {
+            const currentFiles = await this.crawler.listFiles(query.platform);
+            const pathStillExists = currentFiles.some(
+              (file) => String(file?.path || '') === cached.resultPath
+            );
+            if (!pathStillExists) {
+              if (Array.isArray(cached.preview) && cached.preview.length > 0) {
+                const normalizedPreview = this.normalizeResultsPayload(
+                  cached.preview
+                );
+                historyResult = {
+                  resultPath: cached.resultPath,
+                  count:
+                    typeof cached.count === 'number'
+                      ? cached.count
+                      : normalizedPreview.total,
+                  preview: normalizedPreview.data.slice(0, 5),
+                  data: normalizedPreview,
+                  sourcePaths: [cached.resultPath],
+                };
+                cachedAt = cached.cachedAt || null;
+                this.logger.warn(
+                  `materials cache path stale, fallback preview only queryHash=${queryHash} path=${cached.resultPath}`
+                );
+              } else {
+                await this.materials.clearCachedResult(queryHash);
+                this.logger.warn(
+                  `materials cache path stale, cleared queryHash=${queryHash} path=${cached.resultPath}`
+                );
+              }
+              return { historyResult, cachedAt };
+            }
             const cachedResults = await this.crawler.readFile(
               cached.resultPath,
               true,
@@ -185,7 +220,24 @@ export class MaterialsController {
               cachedAt = cached.cachedAt || null;
             }
           } catch {
-            // Fallback to enqueue when cache is no longer valid.
+            if (Array.isArray(cached.preview) && cached.preview.length > 0) {
+              const normalizedPreview = this.normalizeResultsPayload(
+                cached.preview
+              );
+              historyResult = {
+                resultPath: cached.resultPath,
+                count:
+                  typeof cached.count === 'number'
+                    ? cached.count
+                    : normalizedPreview.total,
+                preview: normalizedPreview.data.slice(0, 5),
+                data: normalizedPreview,
+                sourcePaths: [cached.resultPath],
+              };
+              cachedAt = cached.cachedAt || null;
+            } else {
+              await this.materials.clearCachedResult(queryHash);
+            }
           }
         }
       }
@@ -327,10 +379,38 @@ export class MaterialsController {
       normalizedPlatform,
       normalizedExternalId
     );
+    const cacheKey = this.buildAnalysisCacheKey(
+      org.id,
+      normalizedPlatform,
+      normalizedExternalId
+    );
+    const cacheAgeSec = this.extractAnalysisCacheAgeSec(result);
     if (!result) {
-      return { found: false, data: null };
+      this.logger.log(
+        `analysis cache miss org=${org.id} platform=${normalizedPlatform} externalId=${normalizedExternalId}`
+      );
+      return {
+        found: false,
+        data: null,
+        cacheHit: false,
+        cacheSource: 'analysisResult',
+        cacheReason: 'analysis-not-found',
+        cacheKey,
+        cacheAgeSec: null,
+      };
     }
-    return { found: true, data: result };
+    this.logger.log(
+      `analysis cache hit org=${org.id} platform=${normalizedPlatform} externalId=${normalizedExternalId}`
+    );
+    return {
+      found: true,
+      data: result,
+      cacheHit: true,
+      cacheSource: 'analysisResult',
+      cacheReason: 'analysis-found',
+      cacheKey,
+      cacheAgeSec,
+    };
   }
 
   @Post('/analysis/trigger')
@@ -344,19 +424,40 @@ export class MaterialsController {
     }
     const platform = String(item.platform || '').trim().toLowerCase();
     const externalId = String(item.externalId || '').trim();
+    const contentUrl = String(item.contentUrl || '').trim();
     if (!platform || !externalId) {
       throw new BadRequestException('item.platform and item.externalId are required');
     }
+    if (!this.isLikelyVideoUrl(contentUrl)) {
+      throw new BadRequestException('item.contentUrl must be a valid video url');
+    }
 
     const force = Boolean(body?.force);
+    const cacheKey = this.buildAnalysisCacheKey(org.id, platform, externalId);
     if (!force) {
       const existing = await this.materialsAnalysis.getLatestAnalysis(org.id, platform, externalId);
       if (existing) {
-        return {
-          found: true,
-          source: 'cache',
-          data: existing,
-        };
+        if (this.hasAsrHeuristicFallback(existing)) {
+          this.logger.log(
+            `analysis trigger bypass cache due asr-fallback org=${org.id} platform=${platform} externalId=${externalId}`
+          );
+        } else {
+          const cacheAgeSec = this.extractAnalysisCacheAgeSec(existing);
+          this.logger.log(
+            `analysis trigger short-circuit cache org=${org.id} platform=${platform} externalId=${externalId}`
+          );
+          await this.materialsAnalysisQueue.incrementMetric(org.id, 'reusedExisting');
+          return {
+            found: true,
+            source: 'cache',
+            data: existing,
+            cacheHit: true,
+            cacheSource: 'analysisResult',
+            cacheReason: 'existing-analysis',
+            cacheKey,
+            cacheAgeSec,
+          };
+        }
       }
     }
 
@@ -369,7 +470,7 @@ export class MaterialsController {
         title: item.title,
         desc: item.desc,
         coverUrl: item.coverUrl,
-        contentUrl: item.contentUrl,
+        contentUrl,
         authorName: item.authorName,
         authorUserId: item.authorUserId,
         createdAt: item.createdAt,
@@ -380,11 +481,81 @@ export class MaterialsController {
         followerCount: item.followerCount,
       },
     });
+    let state: 'queued' | 'running' = queued.reused ? 'running' : 'queued';
+    let queuePosition: number | null = null;
+    if (queued.reused) {
+      try {
+        const status = await this.materialsAnalysisQueue.getJobStatus(queued.jobId, org.id);
+        state = status.state === 'queued' ? 'queued' : 'running';
+        queuePosition = status.queuePosition ?? null;
+      } catch {
+        // keep fallback state
+      }
+    } else if (!queued.reused) {
+      try {
+        const status = await this.materialsAnalysisQueue.getJobStatus(queued.jobId, org.id);
+        if (status.state === 'queued') {
+          queuePosition = status.queuePosition ?? null;
+        }
+      } catch {
+        // best effort only
+      }
+    }
+    this.logger.log(
+      `analysis trigger queued org=${org.id} platform=${platform} externalId=${externalId} jobId=${queued.jobId} reused=${queued.reused} reason=${queued.reason}`
+    );
+
     return {
       accepted: true,
       jobId: queued.jobId,
       reused: queued.reused,
-      state: queued.reused ? 'running' : 'queued',
+      state,
+      queueReason: queued.reason,
+      dedupeKey: queued.dedupeKey,
+      queuePosition,
+      cacheHit: false,
+      cacheSource: 'analysisResult',
+      cacheReason:
+        queued.reason === 'inflight'
+          ? 'inflight-reused'
+          : queued.reason === 'existing'
+          ? 'existing-job-reused'
+          : 'cache-miss-enqueued',
+      cacheKey,
+      cacheAgeSec: null as number | null,
+    };
+  }
+
+  @Get('/analysis/metrics')
+  async getAnalysisMetrics(@GetOrgFromRequest() org: Organization) {
+    const metrics = await this.materialsAnalysisQueue.getMetrics(org.id);
+    const totalRuns = metrics.workerCacheHit + metrics.workerFreshRun;
+    const cacheHitRate =
+      totalRuns > 0 ? Number((metrics.workerCacheHit / totalRuns).toFixed(4)) : 0;
+    const snapshot = {
+      generatedAt: new Date().toISOString(),
+      cacheHitRate,
+      workerCacheHit: metrics.workerCacheHit,
+      workerFreshRun: metrics.workerFreshRun,
+      enqueuedNew: metrics.enqueuedNew,
+      reusedInflight: metrics.reusedInflight,
+      reusedExisting: metrics.reusedExisting,
+      cancelRequestedRunning: metrics.cancelRequestedRunning,
+      cancelQueued: metrics.cancelQueued,
+      cancelled: metrics.cancelled,
+    };
+    await this.materialsAnalysisQueue.appendMetricsHistory(org.id, snapshot);
+    const history = await this.materialsAnalysisQueue.getMetricsHistory(org.id, 36);
+    return {
+      orgId: org.id,
+      generatedAt: snapshot.generatedAt,
+      metrics,
+      cacheHitRate,
+      history,
+      queueConcurrency: Number(process.env.MATERIALS_ANALYSIS_CONCURRENCY || 2),
+      mediaDownloadConcurrency: Number(
+        process.env.NEXT_PUBLIC_MATERIALS_MEDIA_DOWNLOAD_CONCURRENCY || 2
+      ),
     };
   }
 
@@ -402,6 +573,28 @@ export class MaterialsController {
       org.id
     );
     return status;
+  }
+
+  @Post('/analysis/cancel')
+  async cancelAnalysis(
+    @GetOrgFromRequest() org: Organization,
+    @Body() body: MaterialAnalysisCancelRequest
+  ) {
+    const normalizedJobId = String(body?.jobId || '').trim();
+    if (!normalizedJobId) {
+      throw new BadRequestException('jobId is required');
+    }
+    const cancelled = await this.materialsAnalysisQueue.cancelJob(
+      normalizedJobId,
+      org.id
+    );
+    this.logger.log(
+      `analysis cancel requested org=${org.id} jobId=${normalizedJobId} cancelled=${cancelled.cancelled} state=${cancelled.state}`
+    );
+    return {
+      jobId: normalizedJobId,
+      ...cancelled,
+    };
   }
 
   @Get('/file/:jobId/:filename')
@@ -455,7 +648,23 @@ export class MaterialsController {
     const p = validPlatforms.includes(platform as MediaCrawlerPlatform)
       ? (platform as MediaCrawlerPlatform)
       : 'xhs';
-    return this.crawler.checkLoginStatus(p);
+    const status = await this.crawler.checkLoginStatus(p);
+    const invalidInfo = await this.queue.getLoginInvalidInfo(p);
+    this.logger.log(
+      `[materials.login-status] platform=${p} hasValid=${status?.has_valid_login} lastModified=${status?.last_modified || 'n/a'} cdp=${status?.cdp_mode ?? 'n/a'} invalid=${invalidInfo.invalid} markedAt=${invalidInfo.markedAtMs ?? 'n/a'} reason=${invalidInfo.reason || 'n/a'}`
+    );
+    if (invalidInfo.invalid) {
+      return {
+        ...status,
+        has_valid_login: false,
+        recommendation: 'headed',
+        message:
+          status?.message?.toLowerCase().includes('login required')
+            ? status.message
+            : 'Login required: please click login to refresh account session.',
+      };
+    }
+    return status;
   }
 
   @Post('/enrich-profiles')
@@ -661,6 +870,46 @@ export class MaterialsController {
     return digits;
   }
 
+  private isLikelyVideoUrl(url?: string) {
+    if (!url) {
+      return false;
+    }
+    const value = String(url).trim().toLowerCase();
+    if (!value) {
+      return false;
+    }
+    return /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(value) || value.includes('/video/');
+  }
+
+  private buildAnalysisCacheKey(orgId: string, platform: string, externalId: string) {
+    return `${orgId}:${platform}:${externalId}`;
+  }
+
+  private extractAnalysisCacheAgeSec(payload: unknown) {
+    const generatedAt = (payload as { generatedAt?: string } | null)?.generatedAt;
+    if (!generatedAt) {
+      return null;
+    }
+    const ts = Date.parse(generatedAt);
+    if (!Number.isFinite(ts)) {
+      return null;
+    }
+    return Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  }
+
+  private hasAsrHeuristicFallback(payload: unknown) {
+    const asrModel = String(
+      (
+        payload as {
+          aiDetailLayer?: { asr?: { modelUsed?: string } };
+        } | null
+      )?.aiDetailLayer?.asr?.modelUsed || ''
+    )
+      .trim()
+      .toLowerCase();
+    return asrModel === 'local-heuristic';
+  }
+
   /**
    * Image proxy endpoint to bypass CDN anti-hotlinking protection.
    * Fetches images with proper Referer headers and streams them to frontend.
@@ -677,7 +926,13 @@ export class MaterialsController {
     }
 
     // Decode the URL (it should be encoded when passed as query param)
-    const decodedUrl = decodeURIComponent(url);
+    let decodedUrl = '';
+    try {
+      decodedUrl = decodeURIComponent(url);
+    } catch {
+      this.logger.warn(`materials image-proxy invalid encoded url platform=${platform}`);
+      throw new BadRequestException('Invalid URL');
+    }
 
     // Validate URL - only allow certain CDN domains for security
     const allowedDomains = [
@@ -693,17 +948,25 @@ export class MaterialsController {
       'pstatp.com',
     ];
 
+    let parsedHost = 'unknown';
     try {
       const parsedUrl = new URL(decodedUrl);
+      parsedHost = parsedUrl.hostname;
       const isAllowed = allowedDomains.some(domain =>
         parsedUrl.hostname.endsWith(domain)
       );
 
       if (!isAllowed) {
+        this.logger.warn(
+          `materials image-proxy blocked domain platform=${platform} host=${parsedUrl.hostname}`
+        );
         throw new BadRequestException('Domain not allowed');
       }
     } catch (e) {
       if (e instanceof BadRequestException) throw e;
+      this.logger.warn(
+        `materials image-proxy invalid url platform=${platform} raw=${decodedUrl}`
+      );
       throw new BadRequestException('Invalid URL');
     }
 
@@ -724,7 +987,6 @@ export class MaterialsController {
       const guessedExt = this.getExtensionFromUrl(decodedUrl);
       const guessedCachePath = path.join(cacheDir, `${hash}${guessedExt || '.bin'}`);
       if (fs.existsSync(guessedCachePath)) {
-        res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Cache-Control', 'public, max-age=31536000');
         return res.sendFile(guessedCachePath);
       }
@@ -745,6 +1007,9 @@ export class MaterialsController {
       });
 
       if (!response.ok) {
+        this.logger.warn(
+          `materials image-proxy upstream not found platform=${platform} host=${parsedHost} status=${response.status}`
+        );
         throw new NotFoundException(`Image not found: ${response.status}`);
       }
 
@@ -768,13 +1033,18 @@ export class MaterialsController {
         );
       }
       res.setHeader('Content-Type', contentType);
-      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Cache-Control', 'public, max-age=31536000');
       res.send(payload);
     } catch (e) {
       if (e instanceof NotFoundException || e instanceof BadRequestException) {
+        this.logger.warn(
+          `materials image-proxy failed platform=${platform} host=${parsedHost} reason=${e.message}`
+        );
         throw e;
       }
+      this.logger.warn(
+        `materials image-proxy unexpected error platform=${platform} host=${parsedHost} reason=${e instanceof Error ? e.message : String(e)}`
+      );
       throw new NotFoundException('Failed to fetch image');
     }
   }

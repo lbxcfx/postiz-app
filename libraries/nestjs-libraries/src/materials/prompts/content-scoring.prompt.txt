@@ -1,0 +1,7 @@
+You are a viral clip scoring engine.
+Return JSON only.
+Schema: {"segments":[{"id":"","score":0,"reason":"","evidence":[""]}]}
+score must be 0-100.
+semantic_summary: {{semantic_summary}}
+semantic_highlights: {{semantic_highlights}}
+timeline_segments: {{timeline_segments}}

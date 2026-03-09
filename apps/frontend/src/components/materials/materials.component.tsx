@@ -371,6 +371,13 @@ export const MaterialsComponent = () => {
   const smsVerifyingRef = useRef(false);
   const requestedLoginTypeRef = useRef<"qrcode" | "phone" | null>(null);
   const autoLoginPromptedRef = useRef(false);
+  const phoneCodeSubmittedRef = useRef(false);
+  const loginInvalidStreakRef = useRef(0);
+  const loginStatusRef = useRef<LoginStatus>({
+    checking: true,
+    hasValidLogin: false,
+    message: "checking login status...",
+  });
   const restoredResultsRef = useRef(false);
   const warmedMediaUrlsRef = useRef<Set<string>>(new Set());
 
@@ -535,12 +542,24 @@ export const MaterialsComponent = () => {
     smsVerifyingRef.current = smsVerifying;
   }, [smsVerifying]);
 
+  useEffect(() => {
+    loginStatusRef.current = loginStatus;
+  }, [loginStatus]);
+
   // ────────── Login Status Check ──────────
 
   const refreshLoginStatus = useCallback(async (platform = "xhs") => {
     try {
       const resp = await fetch(`/materials/login-status?platform=${platform}`);
       if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          setLoginStatus({
+            checking: false,
+            hasValidLogin: false,
+            message: "not logged in",
+          });
+          return false;
+        }
         throw new Error(`HTTP ${resp.status}`);
       }
       const data = await resp.json();
@@ -552,6 +571,15 @@ export const MaterialsComponent = () => {
       });
       return data.has_valid_login;
     } catch {
+      const previous = loginStatusRef.current;
+      if (previous?.hasValidLogin) {
+        setLoginStatus({
+          ...previous,
+          checking: false,
+          hasValidLogin: true,
+        });
+        return true;
+      }
       setLoginStatus({
         checking: false,
         hasValidLogin: false,
@@ -569,6 +597,8 @@ export const MaterialsComponent = () => {
       setPhoneLoginJobId(null);
       setSmsVerifying(false);
       setLoginStarting(false);
+      phoneCodeSubmittedRef.current = false;
+      loginInvalidStreakRef.current = 0;
       setLoginStatus((prev) => ({
         ...prev,
         checking: true,
@@ -607,6 +637,43 @@ export const MaterialsComponent = () => {
     [refreshLoginStatus]
   );
 
+  const markLoginRequired = useCallback(
+    (message = "Login required. Please click login to continue.", autoOpen = true) => {
+      loginInvalidStreakRef.current = Math.max(loginInvalidStreakRef.current, 2);
+      setLoginStatus((prev) => ({
+        ...prev,
+        checking: false,
+        hasValidLogin: false,
+        message,
+      }));
+      autoLoginPromptedRef.current = true;
+      if (autoOpen) {
+        setShowLoginDialog(true);
+      }
+    },
+    []
+  );
+
+  const guardPhoneLoginSuccess = () => {
+    if (requestedLoginTypeRef.current !== "phone") {
+      return true;
+    }
+    if (phoneCodeSubmittedRef.current) {
+      return true;
+    }
+    stopLoginPolling();
+    closeEventSource();
+    setLoading(false);
+    setLoginStarting(false);
+    setSmsVerifying(false);
+    setSmsRequested(false);
+    setPhoneLoginJobId(null);
+    requestedLoginTypeRef.current = null;
+    setShowLoginDialog(true);
+    setStatusMessage("请先输入验证码并提交，再完成登录。请重新获取验证码。");
+    return false;
+  };
+
   useEffect(() => {
     let disposed = false;
     const bootstrapLoginState = async () => {
@@ -620,8 +687,16 @@ export const MaterialsComponent = () => {
         return;
       }
       if (hasLogin) {
+        loginInvalidStreakRef.current = 0;
         autoLoginPromptedRef.current = false;
-        setShowLoginDialog(false);
+        // Keep dialog open if user is in the middle of phone login flow.
+        if (
+          requestedLoginTypeRef.current !== "phone" &&
+          !smsRequested &&
+          !smsVerifyingRef.current
+        ) {
+          setShowLoginDialog(false);
+        }
         return;
       }
       if (!loginStarting && !smsVerifyingRef.current) {
@@ -634,7 +709,7 @@ export const MaterialsComponent = () => {
     return () => {
       disposed = true;
     };
-  }, [refreshLoginStatus, loginStarting]);
+  }, [refreshLoginStatus, smsRequested]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -644,7 +719,12 @@ export const MaterialsComponent = () => {
       void (async () => {
         const hasLogin = await refreshLoginStatus(currentPlatformRef.current);
         if (hasLogin) {
+          loginInvalidStreakRef.current = 0;
           autoLoginPromptedRef.current = false;
+          return;
+        }
+        loginInvalidStreakRef.current += 1;
+        if (loginInvalidStreakRef.current < 2) {
           return;
         }
         if (!showLoginDialog && !autoLoginPromptedRef.current) {
@@ -771,11 +851,15 @@ export const MaterialsComponent = () => {
             message: "已登录",
           }));
         } else if (status.state === "failed") {
+          const failureMessage = String(status.error || status.message || "unknown error");
           setProgress(0);
-          setStatusMessage(`搜索失败: ${status.error || "未知错误"}`);
+          setStatusMessage(`Search failed: ${status.error || "unknown error"}`);
           stopPolling();
           setLoading(false);
           setJobId(null);
+          if (failureMessage.toLowerCase().includes("login required")) {
+            markLoginRequired();
+          }
         } else if (status.state === "running" || status.state === "active") {
           setProgress(status.progress ? status.progress * 100 : 50);
           setStatusMessage(status.message || "正在搜索中...");
@@ -789,7 +873,7 @@ export const MaterialsComponent = () => {
         console.error("Polling error:", error);
       }
     },
-    [fetch, refreshJobResults]
+    [fetch, refreshJobResults, markLoginRequired]
   );
 
   // ────────── Search Handler ──────────
@@ -935,6 +1019,9 @@ export const MaterialsComponent = () => {
     );
     setProgress(0);
     requestedLoginTypeRef.current = loginType;
+    if (loginType === "phone") {
+      phoneCodeSubmittedRef.current = false;
+    }
     closeEventSource();
     stopPolling();
     stopLoginPolling();
@@ -998,6 +1085,7 @@ export const MaterialsComponent = () => {
               closeEventSource();
               setLoginStarting(false);
               setSmsVerifying(false);
+              phoneCodeSubmittedRef.current = false;
               if (loginType === "phone") {
                 setSmsRequested(false);
                 setPhoneLoginJobId(null);
@@ -1009,8 +1097,12 @@ export const MaterialsComponent = () => {
             }
             if (status.state === "succeeded") {
               stopLoginPolling();
+              if (!guardPhoneLoginSuccess()) {
+                return;
+              }
               setLoginStarting(false);
               setSmsVerifying(false);
+              phoneCodeSubmittedRef.current = false;
               if (loginType === "phone") {
                 setSmsRequested(false);
                 setPhoneLoginJobId(null);
@@ -1039,6 +1131,7 @@ export const MaterialsComponent = () => {
             closeEventSource();
             setLoginStarting(false);
             setSmsVerifying(false);
+            phoneCodeSubmittedRef.current = false;
             if (loginType === "phone") {
               setSmsRequested(false);
               setPhoneLoginJobId(null);
@@ -1054,6 +1147,7 @@ export const MaterialsComponent = () => {
         setLoginStarting(false);
         setSmsVerifying(false);
         requestedLoginTypeRef.current = null;
+        phoneCodeSubmittedRef.current = false;
         if (loginType === "phone") {
           setSmsRequested(false);
           setPhoneLoginJobId(null);
@@ -1065,6 +1159,7 @@ export const MaterialsComponent = () => {
       setLoginStarting(false);
       setSmsVerifying(false);
       requestedLoginTypeRef.current = null;
+      phoneCodeSubmittedRef.current = false;
       if (loginType === "phone") {
         setSmsRequested(false);
         setPhoneLoginJobId(null);
@@ -1142,6 +1237,7 @@ export const MaterialsComponent = () => {
       setSmsCode("");
       setSmsVerifying(true);
       setLoginStarting(true);
+      phoneCodeSubmittedRef.current = true;
     } catch (error) {
       console.error("Failed to submit sms code:", error);
       const message = error instanceof Error ? error.message : "";
@@ -1157,6 +1253,7 @@ export const MaterialsComponent = () => {
       }
       setSmsVerifying(false);
       setLoginStarting(false);
+      phoneCodeSubmittedRef.current = false;
     } finally {
       setSmsSubmitting(false);
     }
@@ -1176,6 +1273,10 @@ export const MaterialsComponent = () => {
         const type = eventType || payload.type;
         switch (type) {
           case "status":
+            if (!isLoginFlow && payload.state === "login_required") {
+              markLoginRequired(payload.message || "Login required. Please click login to continue.");
+              setLoading(false);
+            }
             if (payload.state === "running") {
               setProgress(payload.progress ? payload.progress * 100 : 50);
               if (!isLoginFlow) {
@@ -1199,9 +1300,17 @@ export const MaterialsComponent = () => {
               if (!isLoginFlow) {
                 setJobId(null);
               }
+              stopLoginPolling();
+              if (
+                isLoginFlow &&
+                payload.state === "succeeded" &&
+                !guardPhoneLoginSuccess()
+              ) {
+                break;
+              }
               setLoginStarting(false);
               setSmsVerifying(false);
-              stopLoginPolling();
+              phoneCodeSubmittedRef.current = false;
               if (isLoginFlow) {
                 setSmsRequested(false);
                 setPhoneLoginJobId(null);
@@ -1230,6 +1339,7 @@ export const MaterialsComponent = () => {
                 setSmsVerifying(false);
                 setSmsRequested(false);
                 setPhoneLoginJobId(null);
+                phoneCodeSubmittedRef.current = false;
                 requestedLoginTypeRef.current = null;
                 stopLoginPolling();
                 break;
@@ -1240,9 +1350,13 @@ export const MaterialsComponent = () => {
                   msg.includes("Login successful") ||
                   /login .*successful/i.test(msg))
               ) {
+                if (!guardPhoneLoginSuccess()) {
+                  break;
+                }
                 requestedLoginTypeRef.current = null;
                 setLoginStarting(false);
                 setSmsVerifying(false);
+                phoneCodeSubmittedRef.current = false;
                 stopLoginPolling();
                 await completeLoginSuccess(platform);
                 break;
@@ -1309,10 +1423,14 @@ export const MaterialsComponent = () => {
             break;
           case "error":
             setStatusMessage(`错误: ${payload.message}`);
+            if (!isLoginFlow && String(payload.message || "").toLowerCase().includes("login required")) {
+              markLoginRequired("Login required. Please click login to continue.");
+            }
             setLoading(false);
             setJobId(null);
             setLoginStarting(false);
             setSmsVerifying(false);
+            phoneCodeSubmittedRef.current = false;
             setSmsRequested(false);
             setPhoneLoginJobId(null);
             closeEventSource();
@@ -1320,6 +1438,9 @@ export const MaterialsComponent = () => {
             stopLoginPolling();
             break;
           case "login_qrcode":
+            if (!isLoginFlow) {
+              break;
+            }
             if (payload.base64_image) {
               const normalized = normalizeQrBase64(payload.base64_image);
               if (normalized) {
@@ -1329,18 +1450,26 @@ export const MaterialsComponent = () => {
             }
             break;
           case "sms_required":
+            if (!isLoginFlow) {
+              break;
+            }
             setLoginStarting(false);
             setSmsRequested(true);
-            if (isLoginFlow) {
-              setPhoneLoginJobId(id);
-            }
+            setPhoneLoginJobId(id);
             setStatusMessage(payload.message || "请输入短信验证码");
             break;
           case "login_success":
+            if (!isLoginFlow) {
+              break;
+            }
+            if (!guardPhoneLoginSuccess()) {
+              break;
+            }
             setJobId(null);
             setSmsRequested(false);
             setPhoneLoginJobId(null);
             setSmsVerifying(false);
+            phoneCodeSubmittedRef.current = false;
             requestedLoginTypeRef.current = null;
             closeEventSource();
             stopPolling();

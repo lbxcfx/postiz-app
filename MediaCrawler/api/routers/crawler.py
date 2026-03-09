@@ -79,6 +79,7 @@ async def get_login_status(platform: str):
         recommendation=result.get("recommendation", "headed"),
         message=result.get("message", "Unable to determine login status"),
         cookies_found=result.get("cookies_found", []),
+        last_modified=result.get("last_modified"),
         user_data_dir=result.get("user_data_dir"),
         cookies_db=result.get("cookies_db"),
         cdp_mode=result.get("cdp_mode"),

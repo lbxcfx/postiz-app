@@ -4,6 +4,12 @@ import { useEffect, useState } from 'react';
 
 const MATERIALS_MEDIA_CACHE_NAME = 'postiz-materials-media-v1';
 const inflightBlobTasks = new Map<string, Promise<Blob | null>>();
+const MAX_MEDIA_DOWNLOAD_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.NEXT_PUBLIC_MATERIALS_MEDIA_DOWNLOAD_CONCURRENCY || 2)
+);
+let activeMediaDownloads = 0;
+const mediaDownloadWaiters: Array<() => void> = [];
 
 const normalizeUrl = (value?: string) => String(value || '').trim();
 
@@ -15,6 +21,27 @@ const isDirectMediaUrl = (url: string) =>
 
 const isBlobLikeUrl = (url: string) =>
   url.startsWith('blob:') || url.startsWith('data:');
+
+const acquireMediaDownloadSlot = async () => {
+  if (activeMediaDownloads < MAX_MEDIA_DOWNLOAD_CONCURRENCY) {
+    activeMediaDownloads += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    mediaDownloadWaiters.push(() => {
+      activeMediaDownloads += 1;
+      resolve();
+    });
+  });
+};
+
+const releaseMediaDownloadSlot = () => {
+  activeMediaDownloads = Math.max(0, activeMediaDownloads - 1);
+  const next = mediaDownloadWaiters.shift();
+  if (next) {
+    next();
+  }
+};
 
 const getMediaBlob = async (url: string): Promise<Blob | null> => {
   if (!supportsCacheStorage() || !isDirectMediaUrl(url) || isBlobLikeUrl(url)) {
@@ -31,7 +58,7 @@ const getMediaBlob = async (url: string): Promise<Blob | null> => {
     return existing;
   }
 
-    const task = (async () => {
+  const task = (async () => {
     const cache = await window.caches.open(MATERIALS_MEDIA_CACHE_NAME);
     const req = new Request(key, { method: 'GET' });
     const matched = await cache.match(req, { ignoreVary: true });
@@ -39,17 +66,22 @@ const getMediaBlob = async (url: string): Promise<Blob | null> => {
       return matched.blob();
     }
 
-    const response = await fetch(req, { credentials: 'include' });
-    if (!response.ok) {
-      return null;
-    }
-
+    await acquireMediaDownloadSlot();
     try {
-      await cache.put(req, response.clone());
-    } catch {
-      // Ignore cache write failures and still return media content.
+      const response = await fetch(req, { credentials: 'include' });
+      if (!response.ok) {
+        return null;
+      }
+
+      try {
+        await cache.put(req, response.clone());
+      } catch {
+        // Ignore cache write failures and still return media content.
+      }
+      return response.blob();
+    } finally {
+      releaseMediaDownloadSlot();
     }
-    return response.blob();
   })()
     .catch(() => null)
     .finally(() => {
@@ -60,12 +92,13 @@ const getMediaBlob = async (url: string): Promise<Blob | null> => {
   return task;
 };
 
-export const warmMediaCache = async (url?: string) => {
+export const warmMediaCache = async (url?: string): Promise<boolean> => {
   const target = normalizeUrl(url);
   if (!target || isBlobLikeUrl(target)) {
-    return;
+    return false;
   }
-  await getMediaBlob(target);
+  const blob = await getMediaBlob(target);
+  return Boolean(blob);
 };
 
 export const useCachedMediaUrl = (sourceUrl?: string, enabled = true) => {

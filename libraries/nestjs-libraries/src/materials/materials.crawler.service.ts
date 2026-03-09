@@ -178,6 +178,7 @@ export class MediaCrawlerService {
     recommendation: 'headless' | 'headed';
     message: string;
     cookies_found?: string[];
+    last_modified?: string;
     user_data_dir?: string;
     cookies_db?: string;
     cdp_mode?: boolean;

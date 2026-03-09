@@ -12,6 +12,23 @@
   backdrop-filter: blur(10px);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
   padding: 16px;
+  animation: cardIn 0.35s ease both;
+}
+
+.page > .card:nth-child(2) {
+  animation-delay: 0.03s;
+}
+
+.page > .card:nth-child(3) {
+  animation-delay: 0.06s;
+}
+
+.page > .card:nth-child(4) {
+  animation-delay: 0.09s;
+}
+
+.page > .card:nth-child(5) {
+  animation-delay: 0.12s;
 }
 
 .header {
@@ -183,6 +200,44 @@
   word-break: break-all;
 }
 
+.lineButton {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  padding: 6px 0;
+  border: none;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.35);
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.lineButton:last-child {
+  border-bottom: none;
+}
+
+.lineButton:hover:not(:disabled) {
+  background: rgba(255, 36, 66, 0.06);
+}
+
+.lineButtonActive {
+  background: rgba(255, 36, 66, 0.12);
+  box-shadow: inset 3px 0 0 #ff2442;
+}
+
+.lineButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.lineButton strong {
+  text-align: right;
+  word-break: break-all;
+}
+
 .tags {
   display: flex;
   flex-wrap: wrap;
@@ -217,6 +272,269 @@
   height: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, #fb7185, #ff2442);
+}
+
+.asrToolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.searchInput {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #1e293b;
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
+.searchInput:focus {
+  outline: none;
+  border-color: #fb7185;
+  box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.18);
+}
+
+.asrActions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.analysisProgress {
+  margin-top: 8px;
+  width: 100%;
+  max-width: 460px;
+}
+
+.progressTrack {
+  height: 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.progressFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #fb7185, #ff2442);
+  transition: width 0.35s ease;
+}
+
+.progressMeta {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.stepList {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.statusMetaRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.statusPill {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 9px;
+}
+
+.metricsTrend {
+  margin-top: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 8px 10px;
+}
+
+.metricsTrendSvg {
+  width: 100%;
+  height: 44px;
+  display: block;
+}
+
+.metricsTrendLine {
+  fill: none;
+  stroke: #ff2442;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.stepItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.stepDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.stepRunning {
+  color: #334155;
+}
+
+.stepRunning .stepDot {
+  background: #f97316;
+}
+
+.stepDone {
+  color: #166534;
+}
+
+.stepDone .stepDot {
+  background: #22c55e;
+}
+
+.stepFailed {
+  color: #991b1b;
+}
+
+.stepFailed .stepDot {
+  background: #ef4444;
+}
+
+.frameGrid {
+  margin-top: 6px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.frameCard {
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 12px;
+  background: #fff;
+  padding: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.frameCard:hover:not(:disabled) {
+  border-color: #fb7185;
+  box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.15);
+  transform: translateY(-1px);
+}
+
+.frameCard:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.frameCardActive {
+  border-color: #ff2442;
+  box-shadow: 0 0 0 2px rgba(255, 36, 66, 0.22);
+}
+
+.frameThumbWrap {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f1f5f9;
+  aspect-ratio: 16 / 9;
+}
+
+.frameThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 0.25s ease;
+}
+
+.frameThumbLoading {
+  opacity: 0;
+}
+
+.frameThumbReady {
+  opacity: 1;
+}
+
+.frameThumbSkeleton {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, #e2e8f0 25%, #f8fafc 40%, #e2e8f0 55%);
+  background-size: 220% 100%;
+  animation: frameSkeleton 1.2s linear infinite;
+}
+
+.frameTimeBadge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.75);
+  border-radius: 999px;
+  padding: 3px 6px;
+}
+
+.frameSummary {
+  font-size: 12px;
+  color: #1e293b;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.frameKeyText {
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.frameKeywords {
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.frameThumbFallback {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #64748b;
+  background: #e2e8f0;
 }
 
 .dimReason {
@@ -271,6 +589,26 @@
   }
 }
 
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes frameSkeleton {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
 .empty {
   color: #64748b;
   text-align: center;
@@ -288,5 +626,29 @@
 
   .layers {
     grid-template-columns: 1fr;
+  }
+
+  .frameGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .stepList {
+    grid-template-columns: 1fr;
+  }
+
+  .frameGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    animation: none;
+  }
+
+  .frameCard {
+    transition: none;
   }
 }

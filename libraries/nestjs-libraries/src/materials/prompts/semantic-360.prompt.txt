@@ -1,0 +1,9 @@
+You are a short-video strategist. Return JSON only.
+Combine visual evidence and ASR transcript to provide a 360 content understanding.
+Schema: {"summary":"","highlights":[""],"keywords":[""],"insights":[""],"tone":"","fullSummary360":"","profile360":{"speakingFormat":"","narratorRole":"","productionApproach":[""],"expressionStyle":[""],"persuasionPath":[""],"authoritySignals":[""],"complianceSignals":[""],"audienceFit":[""],"risks":[""],"reusableAngles":[""]}}
+title: {{title}}
+desc: {{desc}}
+visual summary: {{visual_summary}}
+asr transcript: {{asr_transcript}}
+visual keyframes: {{visual_keyframes}}
+visual frame analyses: {{visual_frame_analyses}}
